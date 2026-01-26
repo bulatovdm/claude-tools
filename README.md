@@ -6,19 +6,22 @@ Custom tools and scripts for [Claude Code](https://claude.ai/claude-code) CLI.
 
 ### Status Line
 
-Visual progress bar showing context usage and autocompact status:
+Visual progress bar showing context usage and autocompact warning:
 
 ```
-████░░░░░░ 45% │ AC ██░░░░░░░░ 28%
+Context: ████░░░░░░ 45%
 ```
 
-- **Left bar** — context used (green → yellow → red)
-- **Right bar** — remaining until autocompact triggers
+When approaching autocompact (≤10% remaining):
 
-Color thresholds:
-- **Green** — safe zone
-- **Yellow** — approaching limit
-- **Red** — critical
+```
+Context: ███████░░░ 70% │ AC: ░░░░░░░░░░ 7%
+```
+
+- **Context** — usage percentage (green → yellow → red)
+- **AC** — remaining until autocompact triggers (appears at ≤10%)
+
+Autocompact triggers at 77% usage (22.5% buffer reserved).
 
 ## Requirements
 
@@ -34,7 +37,7 @@ brew install jq
 ### Quick Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/claude-tools.git
+git clone https://github.com/bulatovdm/claude-tools.git
 cd claude-tools
 ./install.sh
 ```
@@ -56,22 +59,6 @@ Add to `~/.claude/settings.json`:
   }
 }
 ```
-
-## Configuration
-
-### Autocompact Threshold
-
-Set in `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80"
-  }
-}
-```
-
-Default: `95` (triggers at 95% - 22% buffer ≈ 73% usage)
 
 ## Usage
 
