@@ -13,7 +13,7 @@ readonly COLOR_RESET="\033[0m"
 
 readonly AUTOCOMPACT_TRIGGER_USED=77
 
-readonly BAR_WIDTH=10
+readonly BAR_WIDTH=15
 readonly BAR_FILLED="█"
 readonly BAR_EMPTY="░"
 
