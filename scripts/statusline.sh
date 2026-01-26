@@ -129,7 +129,7 @@ format_output() {
     if (( until_ac <= show_ac_threshold )); then
         ac_color=$(get_color_by_percentage "$until_ac" "true")
         ac_bar=$(build_progress_bar "$until_ac" "$ac_color")
-        echo -e "Context: ${used_bar} ${used_color}${used}%${COLOR_RESET} ${COLOR_GRAY}│${COLOR_RESET} AC: ${ac_bar} ${ac_color}${until_ac}%${COLOR_RESET}"
+        echo -e "Context: ${used_bar} ${used_color}${used}%${COLOR_RESET} ${COLOR_GRAY}│${COLOR_RESET} Left until auto-compact: ${ac_bar} ${ac_color}${until_ac}%${COLOR_RESET}"
     else
         echo -e "Context: ${used_bar} ${used_color}${used}%${COLOR_RESET}"
     fi
