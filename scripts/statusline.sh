@@ -11,7 +11,7 @@ readonly COLOR_RED="\033[31m"
 readonly COLOR_GRAY="\033[90m"
 readonly COLOR_RESET="\033[0m"
 
-readonly AUTOCOMPACT_TRIGGER_USED=77
+readonly AUTOCOMPACT_TRIGGER_USED="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-85}"
 
 readonly BAR_WIDTH=15
 readonly BAR_FILLED="█"
@@ -139,13 +139,13 @@ run_test() {
     echo "Trigger at: ${AUTOCOMPACT_TRIGGER_USED}%"
     echo ""
     echo "Normal (AC hidden, until_ac > 10%):"
-    format_output "45" "32"
+    format_output "45" "40"
     echo ""
     echo "Warning (AC visible, until_ac <= 10%):"
-    format_output "70" "7"
+    format_output "78" "7"
     echo ""
     echo "Critical (AC visible, until_ac = 0%):"
-    format_output "77" "0"
+    format_output "85" "0"
 }
 
 main() {
