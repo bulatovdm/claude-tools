@@ -3,15 +3,13 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="2.0.0"
+readonly VERSION="2.1.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
 readonly COLOR_RED="\033[31m"
 readonly COLOR_GRAY="\033[90m"
 readonly COLOR_RESET="\033[0m"
-
-readonly AUTOCOMPACT_TRIGGER_USED="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-85}"
 
 readonly BAR_WIDTH=15
 readonly BAR_FILLED="█"
@@ -22,7 +20,7 @@ show_help() {
 Usage: $SCRIPT_NAME [OPTIONS]
 
 Claude Code status line with visual progress bar.
-Shows context usage and autocompact trigger (at ${AUTOCOMPACT_TRIGGER_USED}% usage).
+Shows context usage percentage.
 
 Options:
     -h, --help      Show this help message
@@ -40,27 +38,15 @@ show_version() {
     echo "$SCRIPT_NAME version $VERSION"
 }
 
-
 get_color_by_percentage() {
     local percentage=$1
-    local invert=${2:-false}
 
-    if [ "$invert" = "true" ]; then
-        if (( percentage > 40 )); then
-            echo "$COLOR_GREEN"
-        elif (( percentage > 20 )); then
-            echo "$COLOR_YELLOW"
-        else
-            echo "$COLOR_RED"
-        fi
+    if (( percentage < 60 )); then
+        echo "$COLOR_GREEN"
+    elif (( percentage < 80 )); then
+        echo "$COLOR_YELLOW"
     else
-        if (( percentage < 60 )); then
-            echo "$COLOR_GREEN"
-        elif (( percentage < 80 )); then
-            echo "$COLOR_YELLOW"
-        else
-            echo "$COLOR_RED"
-        fi
+        echo "$COLOR_RED"
     fi
 }
 
@@ -100,64 +86,38 @@ parse_used_percentage() {
     echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d'.' -f1
 }
 
-calculate_until_autocompact() {
-    local used=$1
-    local until_ac
-
-    until_ac=$((AUTOCOMPACT_TRIGGER_USED - used))
-
-    if (( until_ac < 0 )); then
-        until_ac=0
-    fi
-
-    echo "$until_ac"
-}
-
 format_output() {
     local used=$1
-    local until_ac=$2
-
     local used_color
-    local ac_color
     local used_bar
-    local ac_bar
-    local show_ac_threshold=10
 
-    used_color=$(get_color_by_percentage "$used" "false")
+    used_color=$(get_color_by_percentage "$used")
     used_bar=$(build_progress_bar "$used" "$used_color")
 
-    if (( until_ac <= show_ac_threshold )); then
-        ac_color=$(get_color_by_percentage "$until_ac" "true")
-        ac_bar=$(build_progress_bar "$until_ac" "$ac_color")
-        echo -e "${COLOR_GRAY}Context:${COLOR_RESET} ${used_bar} ${used_color}${used}%${COLOR_RESET} ${COLOR_GRAY}│ Left until auto-compact:${COLOR_RESET} ${ac_bar} ${ac_color}${until_ac}%${COLOR_RESET}"
-    else
-        echo -e "${COLOR_GRAY}Context:${COLOR_RESET} ${used_bar} ${used_color}${used}%${COLOR_RESET}"
-    fi
+    echo -e "${COLOR_GRAY}Context:${COLOR_RESET} ${used_bar} ${used_color}${used}%${COLOR_RESET}"
 }
 
 run_test() {
-    echo "Trigger at: ${AUTOCOMPACT_TRIGGER_USED}%"
+    echo "Test output at different usage levels:"
     echo ""
-    echo "Normal (AC hidden, until_ac > 10%):"
-    format_output "45" "40"
+    echo "Low usage (45%):"
+    format_output "45"
     echo ""
-    echo "Warning (AC visible, until_ac <= 10%):"
-    format_output "78" "7"
+    echo "Medium usage (70%):"
+    format_output "70"
     echo ""
-    echo "Critical (AC visible, until_ac = 0%):"
-    format_output "85" "0"
+    echo "High usage (85%):"
+    format_output "85"
 }
 
 main() {
     local input
     local used
-    local until_ac
 
     input=$(cat)
     used=$(parse_used_percentage "$input")
-    until_ac=$(calculate_until_autocompact "$used")
 
-    format_output "$used" "$until_ac"
+    format_output "$used"
 }
 
 case "${1:-}" in
