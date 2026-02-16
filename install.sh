@@ -66,9 +66,23 @@ check_dependencies() {
         missing+=("jq")
     fi
 
-    if [ ${#missing[@]} -gt 0 ]; then
-        log_error "Missing dependencies: ${missing[*]}"
-        log_info "Install with: brew install ${missing[*]}"
+    if [ ${#missing[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    log_warning "Missing dependencies: ${missing[*]}"
+
+    if command -v brew &> /dev/null; then
+        log_info "Installing via Homebrew: ${missing[*]}"
+        brew install "${missing[@]}"
+        log_success "Dependencies installed: ${missing[*]}"
+    elif command -v apt-get &> /dev/null; then
+        log_info "Installing via apt: ${missing[*]}"
+        sudo apt-get update -qq && sudo apt-get install -y -qq "${missing[@]}"
+        log_success "Dependencies installed: ${missing[*]}"
+    else
+        log_error "Cannot auto-install dependencies. No supported package manager found (brew/apt)"
+        log_info "Please install manually: ${missing[*]}"
         exit 1
     fi
 }
