@@ -6,16 +6,19 @@ Custom tools and scripts for [Claude Code](https://claude.ai/claude-code) CLI.
 
 ### Status Line
 
-Visual status bar showing model, context usage, and subscription limits:
+Visual status bar showing model, context usage, subscription limits, cost, and session time:
 
 ```
-Opus │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% │ Week: 35%
+Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% │ Week: 35% │ Sonnet: 0% │ Cost: $1.25 │ Time: 17m
 ```
 
 - **Model** — current model name (cyan)
 - **Context** — context window usage with progress bar (green → yellow → red)
 - **5h** — 5-hour usage window utilization
 - **Week** — 7-day usage window utilization
+- **Sonnet** — weekly Sonnet-specific usage limit
+- **Cost** — session cost in USD
+- **Time** — session duration
 
 All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
 
