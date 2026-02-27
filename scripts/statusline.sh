@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="3.2.0"
+readonly VERSION="3.3.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -123,6 +123,57 @@ format_cost() {
     printf '$%.2f' "$cost"
 }
 
+seconds_until_reset() {
+    local reset_iso=$1
+
+    [[ -z "$reset_iso" || "$reset_iso" == "null" ]] && return 1
+
+    local reset_epoch
+    reset_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${reset_iso%%.*}" +%s 2>/dev/null) || return 1
+    local now_epoch
+    now_epoch=$(date +%s)
+    echo $(( reset_epoch - now_epoch ))
+}
+
+format_time_remaining() {
+    local diff=$1
+
+    (( diff <= 0 )) && { echo "now"; return; }
+
+    local days=$(( diff / 86400 ))
+    local hours=$(( (diff % 86400) / 3600 ))
+    local mins=$(( (diff % 3600) / 60 ))
+
+    if (( days > 0 )); then
+        echo "${days}d${hours}h"
+    elif (( hours > 0 )); then
+        echo "${hours}h${mins}m"
+    else
+        echo "${mins}m"
+    fi
+}
+
+timer_icon_for_seconds() {
+    local seconds=$1
+    local window_seconds=$2
+
+    (( seconds <= 0 )) && { echo "○"; return; }
+
+    local pct=$(( seconds * 100 / window_seconds ))
+
+    if (( pct > 75 )); then
+        echo "●"
+    elif (( pct > 50 )); then
+        echo "◕"
+    elif (( pct > 25 )); then
+        echo "◑"
+    elif (( pct > 0 )); then
+        echo "◔"
+    else
+        echo "○"
+    fi
+}
+
 usage_cache_is_stale() {
     [[ ! -f "$USAGE_CACHE_FILE" ]] || \
     (( $(date +%s) - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) > USAGE_CACHE_MAX_AGE ))
@@ -154,19 +205,24 @@ get_usage_limits() {
     fi
 
     if [[ -f "$USAGE_CACHE_FILE" ]]; then
-        local five_hour seven_day sonnet
+        local five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset
         five_hour=$(jq -r '.five_hour.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
         seven_day=$(jq -r '.seven_day.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
         sonnet=$(jq -r '.seven_day_sonnet.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
-        echo "${five_hour:-}|${seven_day:-}|${sonnet:-}"
+        five_hour_reset=$(jq -r '.five_hour.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
+        seven_day_reset=$(jq -r '.seven_day.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
+        sonnet_reset=$(jq -r '.seven_day_sonnet.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
+        echo "${five_hour:-}|${seven_day:-}|${sonnet:-}|${five_hour_reset:-}|${seven_day_reset:-}|${sonnet_reset:-}"
     else
-        echo "||"
+        echo "|||||"
     fi
 }
 
 format_usage_part() {
     local label=$1
     local value=$2
+    local reset_iso=${3:-}
+    local window_seconds=${4:-18000}
 
     if [[ -z "$value" ]]; then
         echo -e "${COLOR_GRAY}${label}: ?${COLOR_RESET}"
@@ -175,7 +231,19 @@ format_usage_part() {
 
     local color
     color=$(get_color_by_percentage "$value")
-    echo -e "${COLOR_GRAY}${label}:${COLOR_RESET} ${color}${value}%${COLOR_RESET}"
+
+    local reset_str=""
+    if [[ -n "$reset_iso" ]]; then
+        local seconds_left
+        seconds_left=$(seconds_until_reset "$reset_iso") || seconds_left=0
+        local icon
+        icon=$(timer_icon_for_seconds "$seconds_left" "$window_seconds")
+        local time_str
+        time_str=$(format_time_remaining "$seconds_left")
+        reset_str=" ${COLOR_GRAY}${icon} ${time_str}${COLOR_RESET}"
+    fi
+
+    echo -e "${COLOR_GRAY}${label}:${COLOR_RESET} ${color}${value}%${COLOR_RESET}${reset_str}"
 }
 
 format_output() {
@@ -184,8 +252,11 @@ format_output() {
     local five_hour=$3
     local seven_day=$4
     local sonnet=$5
-    local cost=$6
-    local duration_ms=$7
+    local five_hour_reset=$6
+    local seven_day_reset=$7
+    local sonnet_reset=$8
+    local cost=$9
+    local duration_ms=${10}
 
     local used_color
     local used_bar
@@ -197,9 +268,9 @@ format_output() {
     local five_hour_part
     local seven_day_part
     local sonnet_part
-    five_hour_part=$(format_usage_part "5h" "$five_hour")
-    seven_day_part=$(format_usage_part "Week" "$seven_day")
-    sonnet_part=$(format_usage_part "Sonnet" "$sonnet")
+    five_hour_part=$(format_usage_part "5h" "$five_hour" "$five_hour_reset" "18000")
+    seven_day_part=$(format_usage_part "Week" "$seven_day" "$seven_day_reset" "604800")
+    sonnet_part=$(format_usage_part "Sonnet" "$sonnet" "$sonnet_reset" "604800")
 
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
@@ -210,17 +281,25 @@ format_output() {
 run_test() {
     echo "Test output at different usage levels:"
     echo ""
+    # Generate test reset times relative to now
+    local now_epoch
+    now_epoch=$(date +%s)
+    local reset_2h reset_6d reset_5d
+    reset_2h=$(date -r $((now_epoch + 7200)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
+    reset_6d=$(date -r $((now_epoch + 518400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
+    reset_5d=$(date -r $((now_epoch + 432000)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
+
     echo "Low usage (45%), short session:"
-    format_output "45" "Opus" "6" "35" "3" "0.42" "300000"
+    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000"
     echo ""
     echo "Medium usage (70%), longer session:"
-    format_output "70" "Sonnet" "50" "60" "20" "2.15" "1800000"
+    format_output "70" "Sonnet" "50" "60" "20" "$reset_2h" "$reset_6d" "$reset_5d" "2.15" "1800000"
     echo ""
     echo "High usage (85%), expensive session:"
-    format_output "85" "Opus" "80" "90" "65" "8.73" "7200000"
+    format_output "85" "Opus" "80" "90" "65" "$reset_2h" "$reset_6d" "$reset_5d" "8.73" "7200000"
     echo ""
     echo "No limits data:"
-    format_output "45" "Opus" "" "" "" "0.01" "60000"
+    format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000"
 }
 
 main() {
@@ -233,7 +312,10 @@ main() {
     local five_hour
     local seven_day
     local sonnet
-    local remaining
+    local five_hour_reset
+    local seven_day_reset
+    local sonnet_reset
+    local rest
 
     input=$(cat)
     used=$(parse_used_percentage "$input")
@@ -243,11 +325,17 @@ main() {
 
     usage_data=$(get_usage_limits)
     five_hour="${usage_data%%|*}"
-    remaining="${usage_data#*|}"
-    seven_day="${remaining%%|*}"
-    sonnet="${remaining#*|}"
+    rest="${usage_data#*|}"
+    seven_day="${rest%%|*}"
+    rest="${rest#*|}"
+    sonnet="${rest%%|*}"
+    rest="${rest#*|}"
+    five_hour_reset="${rest%%|*}"
+    rest="${rest#*|}"
+    seven_day_reset="${rest%%|*}"
+    sonnet_reset="${rest#*|}"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$cost" "$duration_ms"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms"
 }
 
 case "${1:-}" in

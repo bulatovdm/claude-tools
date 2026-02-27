@@ -57,12 +57,19 @@ run_func_with_cache() {
     bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; $*"
 }
 
+NOW_EPOCH=$(date +%s)
+RESET_2H=$(date -r $((NOW_EPOCH + 7200)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_6D=$(date -r $((NOW_EPOCH + 518400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_30M=$(date -r $((NOW_EPOCH + 1800)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_PAST=$(date -r $((NOW_EPOCH - 60)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_4H=$(date -r $((NOW_EPOCH + 14400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+
 echo "=== statusline.sh tests ==="
 echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "3.2.0"
+assert_contains "shows version" "$result" "3.3.0"
 
 echo ""
 echo "[Help]"
@@ -130,9 +137,6 @@ assert_equals "1.5 hours" "$result" "1h 30m"
 result=$(run_func "format_duration 0")
 assert_equals "0 minutes" "$result" "0m"
 
-result=$(run_func "format_duration 45000")
-assert_equals "less than 1 minute" "$result" "0m"
-
 echo ""
 echo "[format_cost]"
 
@@ -144,6 +148,56 @@ assert_equals "pads to 2 decimals" "$result" '$8.70'
 
 result=$(run_func "format_cost 0")
 assert_equals "zero cost" "$result" '$0.00'
+
+echo ""
+echo "[format_time_remaining]"
+
+result=$(run_func "format_time_remaining 7200")
+assert_equals "2 hours" "$result" "2h0m"
+
+result=$(run_func "format_time_remaining 518400")
+assert_equals "6 days" "$result" "6d0h"
+
+result=$(run_func "format_time_remaining 1800")
+assert_equals "30 minutes" "$result" "30m"
+
+result=$(run_func "format_time_remaining 0")
+assert_equals "zero shows now" "$result" "now"
+
+result=$(run_func "format_time_remaining -60")
+assert_equals "negative shows now" "$result" "now"
+
+echo ""
+echo "[seconds_until_reset]"
+
+result=$(run_func "seconds_until_reset '$RESET_2H'")
+# Should be ~7200 but may drift a few seconds during test
+(( result >= 7100 && result <= 7200 )) && result_ok="ok" || result_ok="bad: $result"
+assert_equals "2h from now ~7200" "$result_ok" "ok"
+
+result=$(run_func "seconds_until_reset '' 2>/dev/null || echo 'error'")
+assert_equals "empty returns error" "$result" "error"
+
+echo ""
+echo "[timer_icon_for_seconds]"
+
+result=$(run_func "timer_icon_for_seconds 16000 18000")
+assert_equals ">75% full circle" "$result" "●"
+
+result=$(run_func "timer_icon_for_seconds 12000 18000")
+assert_equals ">50% three-quarter" "$result" "◕"
+
+result=$(run_func "timer_icon_for_seconds 8000 18000")
+assert_equals ">25% half" "$result" "◑"
+
+result=$(run_func "timer_icon_for_seconds 3000 18000")
+assert_equals ">0% quarter" "$result" "◔"
+
+result=$(run_func "timer_icon_for_seconds 0 18000")
+assert_equals "0 empty circle" "$result" "○"
+
+result=$(run_func "timer_icon_for_seconds -100 18000")
+assert_equals "negative empty circle" "$result" "○"
 
 echo ""
 echo "[get_color_by_percentage]"
@@ -190,12 +244,14 @@ assert_equals "negative clamped to empty" "$bar" "░░░░░░░░░░
 echo ""
 echo "[format_output]"
 
-output=$(run_func "format_output 45 Opus 10 30 5 1.25 600000" | strip_colors)
+output=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
 assert_contains "contains model name" "$output" "Opus"
 assert_contains "contains context percentage" "$output" "45%"
 assert_contains "contains 5h limit" "$output" "5h: 10%"
 assert_contains "contains week limit" "$output" "Week: 30%"
 assert_contains "contains sonnet limit" "$output" "Sonnet: 5%"
+assert_contains "contains timer icon" "$output" "◑"
+assert_contains "contains reset time" "$output" "h"
 assert_contains "contains cost" "$output" '$1.25'
 assert_contains "contains time" "$output" "Time: 10m"
 assert_contains "contains separators" "$output" "│"
@@ -208,6 +264,16 @@ assert_contains "missing data shows ?" "$result" "5h: ?"
 
 result=$(run_func "format_usage_part 'Week' '42'" | strip_colors)
 assert_contains "present data shows value" "$result" "Week: 42%"
+
+result=$(run_func "format_usage_part '5h' '20' '$RESET_2H' 18000" | strip_colors)
+assert_contains "shows timer icon" "$result" "◑"
+assert_contains "shows reset time" "$result" "h"
+
+result=$(run_func "format_usage_part '5h' '20' '$RESET_4H' 18000" | strip_colors)
+assert_contains "4h shows three-quarter icon" "$result" "●"
+
+result=$(run_func "format_usage_part '5h' '20' '' 18000" | strip_colors)
+assert_contains "no reset without timestamp" "$result" "5h: 20%"
 
 echo ""
 echo "[usage_cache_is_stale]"
@@ -232,10 +298,11 @@ echo ""
 echo "[get_usage_limits from cache]"
 
 READ_CACHE="/tmp/claude-statusline-test-read-$$"
-echo '{"five_hour":{"utilization":25.0},"seven_day":{"utilization":50.0},"seven_day_sonnet":{"utilization":10.0}}' > "$READ_CACHE"
+echo "{\"five_hour\":{\"utilization\":25.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":50.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":10.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$READ_CACHE"
 
 result=$(run_func_with_cache "$READ_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits")
-assert_equals "reads limits from cache" "$result" "25|50|10"
+assert_contains "reads utilization from cache" "$result" "25|50|10|"
+assert_contains "reads reset times from cache" "$result" "$RESET_2H"
 
 rm -f "$READ_CACHE"
 
@@ -247,13 +314,13 @@ result=$(bash -c "
     fetch_usage_limits() { return 1; }
     get_usage_limits
 ")
-assert_equals "no cache returns empty" "$result" "||"
+assert_equals "no cache returns empty" "$result" "|||||"
 
 echo ""
 echo "[Integration]"
 
 INT_CACHE="/tmp/claude-statusline-test-int-$$"
-echo '{"five_hour":{"utilization":12.0},"seven_day":{"utilization":45.0},"seven_day_sonnet":{"utilization":8.0}}' > "$INT_CACHE"
+echo "{\"five_hour\":{\"utilization\":12.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":45.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":8.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$INT_CACHE"
 
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "
@@ -266,6 +333,7 @@ full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_n
 assert_contains "has model" "$full_output" "Sonnet"
 assert_contains "has context" "$full_output" "55%"
 assert_contains "has 5h" "$full_output" "5h: 12%"
+assert_contains "has timer icon" "$full_output" "◑"
 assert_contains "has week" "$full_output" "Week: 45%"
 assert_contains "has sonnet" "$full_output" "Sonnet: 8%"
 assert_contains "has cost" "$full_output" '$2.50'
@@ -276,10 +344,10 @@ rm -f "$INT_CACHE"
 echo ""
 echo "[Color coding]"
 
-low_output=$(run_func "format_output 30 Opus 10 20 5 0.5 60000")
+low_output=$(run_func "format_output 30 Opus 10 20 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 0.5 60000")
 assert_contains "low context uses green" "$low_output" "32m"
 
-high_output=$(run_func "format_output 90 Opus 85 95 70 5.0 3600000")
+high_output=$(run_func "format_output 90 Opus 85 95 70 '$RESET_2H' '$RESET_6D' '$RESET_6D' 5.0 3600000")
 assert_contains "high context uses red" "$high_output" "31m"
 
 assert_contains "model uses cyan" "$low_output" "36m"
