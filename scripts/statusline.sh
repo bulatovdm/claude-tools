@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="3.1.0"
+readonly VERSION="3.2.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -154,12 +154,13 @@ get_usage_limits() {
     fi
 
     if [[ -f "$USAGE_CACHE_FILE" ]]; then
-        local five_hour seven_day
+        local five_hour seven_day sonnet
         five_hour=$(jq -r '.five_hour.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
         seven_day=$(jq -r '.seven_day.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
-        echo "${five_hour:-}|${seven_day:-}"
+        sonnet=$(jq -r '.seven_day_sonnet.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
+        echo "${five_hour:-}|${seven_day:-}|${sonnet:-}"
     else
-        echo "|"
+        echo "||"
     fi
 }
 
@@ -182,8 +183,9 @@ format_output() {
     local model=$2
     local five_hour=$3
     local seven_day=$4
-    local cost=$5
-    local duration_ms=$6
+    local sonnet=$5
+    local cost=$6
+    local duration_ms=$7
 
     local used_color
     local used_bar
@@ -194,29 +196,31 @@ format_output() {
     local model_part="${COLOR_CYAN}${model}${COLOR_RESET}"
     local five_hour_part
     local seven_day_part
+    local sonnet_part
     five_hour_part=$(format_usage_part "5h" "$five_hour")
     seven_day_part=$(format_usage_part "Week" "$seven_day")
+    sonnet_part=$(format_usage_part "Sonnet" "$sonnet")
 
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
 
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}"
+    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}"
 }
 
 run_test() {
     echo "Test output at different usage levels:"
     echo ""
     echo "Low usage (45%), short session:"
-    format_output "45" "Opus" "6" "35" "0.42" "300000"
+    format_output "45" "Opus" "6" "35" "3" "0.42" "300000"
     echo ""
     echo "Medium usage (70%), longer session:"
-    format_output "70" "Sonnet" "50" "60" "2.15" "1800000"
+    format_output "70" "Sonnet" "50" "60" "20" "2.15" "1800000"
     echo ""
     echo "High usage (85%), expensive session:"
-    format_output "85" "Opus" "80" "90" "8.73" "7200000"
+    format_output "85" "Opus" "80" "90" "65" "8.73" "7200000"
     echo ""
     echo "No limits data:"
-    format_output "45" "Opus" "" "" "0.01" "60000"
+    format_output "45" "Opus" "" "" "" "0.01" "60000"
 }
 
 main() {
@@ -228,6 +232,8 @@ main() {
     local usage_data
     local five_hour
     local seven_day
+    local sonnet
+    local remaining
 
     input=$(cat)
     used=$(parse_used_percentage "$input")
@@ -237,9 +243,11 @@ main() {
 
     usage_data=$(get_usage_limits)
     five_hour="${usage_data%%|*}"
-    seven_day="${usage_data##*|}"
+    remaining="${usage_data#*|}"
+    seven_day="${remaining%%|*}"
+    sonnet="${remaining#*|}"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$cost" "$duration_ms"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$cost" "$duration_ms"
 }
 
 case "${1:-}" in

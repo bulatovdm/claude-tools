@@ -62,7 +62,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "3.1.0"
+assert_contains "shows version" "$result" "3.2.0"
 
 echo ""
 echo "[Help]"
@@ -190,11 +190,12 @@ assert_equals "negative clamped to empty" "$bar" "░░░░░░░░░░
 echo ""
 echo "[format_output]"
 
-output=$(run_func "format_output 45 Opus 10 30 1.25 600000" | strip_colors)
+output=$(run_func "format_output 45 Opus 10 30 5 1.25 600000" | strip_colors)
 assert_contains "contains model name" "$output" "Opus"
 assert_contains "contains context percentage" "$output" "45%"
 assert_contains "contains 5h limit" "$output" "5h: 10%"
 assert_contains "contains week limit" "$output" "Week: 30%"
+assert_contains "contains sonnet limit" "$output" "Sonnet: 5%"
 assert_contains "contains cost" "$output" '$1.25'
 assert_contains "contains time" "$output" "Time: 10m"
 assert_contains "contains separators" "$output" "│"
@@ -231,10 +232,10 @@ echo ""
 echo "[get_usage_limits from cache]"
 
 READ_CACHE="/tmp/claude-statusline-test-read-$$"
-echo '{"five_hour":{"utilization":25.0},"seven_day":{"utilization":50.0}}' > "$READ_CACHE"
+echo '{"five_hour":{"utilization":25.0},"seven_day":{"utilization":50.0},"seven_day_sonnet":{"utilization":10.0}}' > "$READ_CACHE"
 
 result=$(run_func_with_cache "$READ_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits")
-assert_equals "reads limits from cache" "$result" "25|50"
+assert_equals "reads limits from cache" "$result" "25|50|10"
 
 rm -f "$READ_CACHE"
 
@@ -246,13 +247,13 @@ result=$(bash -c "
     fetch_usage_limits() { return 1; }
     get_usage_limits
 ")
-assert_equals "no cache returns empty" "$result" "|"
+assert_equals "no cache returns empty" "$result" "||"
 
 echo ""
 echo "[Integration]"
 
 INT_CACHE="/tmp/claude-statusline-test-int-$$"
-echo '{"five_hour":{"utilization":12.0},"seven_day":{"utilization":45.0}}' > "$INT_CACHE"
+echo '{"five_hour":{"utilization":12.0},"seven_day":{"utilization":45.0},"seven_day_sonnet":{"utilization":8.0}}' > "$INT_CACHE"
 
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "
@@ -266,6 +267,7 @@ assert_contains "has model" "$full_output" "Sonnet"
 assert_contains "has context" "$full_output" "55%"
 assert_contains "has 5h" "$full_output" "5h: 12%"
 assert_contains "has week" "$full_output" "Week: 45%"
+assert_contains "has sonnet" "$full_output" "Sonnet: 8%"
 assert_contains "has cost" "$full_output" '$2.50'
 assert_contains "has time" "$full_output" "15m"
 
@@ -274,10 +276,10 @@ rm -f "$INT_CACHE"
 echo ""
 echo "[Color coding]"
 
-low_output=$(run_func "format_output 30 Opus 10 20 0.5 60000")
+low_output=$(run_func "format_output 30 Opus 10 20 5 0.5 60000")
 assert_contains "low context uses green" "$low_output" "32m"
 
-high_output=$(run_func "format_output 90 Opus 85 95 5.0 3600000")
+high_output=$(run_func "format_output 90 Opus 85 95 70 5.0 3600000")
 assert_contains "high context uses red" "$high_output" "31m"
 
 assert_contains "model uses cyan" "$low_output" "36m"
@@ -297,6 +299,7 @@ assert_contains "test shows low usage" "$test_output" "45%"
 assert_contains "test shows high usage" "$test_output" "85%"
 assert_contains "test shows no limits" "$test_output" "?"
 assert_contains "test shows model" "$test_output" "Opus"
+assert_contains "test shows sonnet" "$test_output" "Sonnet:"
 assert_contains "test shows cost" "$test_output" '$0.42'
 assert_contains "test shows time" "$test_output" "Time:"
 
