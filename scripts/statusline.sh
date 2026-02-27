@@ -129,9 +129,9 @@ seconds_until_reset() {
     [[ -z "$reset_iso" || "$reset_iso" == "null" ]] && return 1
 
     local reset_epoch
-    reset_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${reset_iso%%.*}" +%s 2>/dev/null) || return 1
+    reset_epoch=$(TZ=UTC date -jf "%Y-%m-%dT%H:%M:%S" "${reset_iso%%.*}" +%s 2>/dev/null) || return 1
     local now_epoch
-    now_epoch=$(date +%s)
+    now_epoch=$(date -u +%s)
     echo $(( reset_epoch - now_epoch ))
 }
 
@@ -240,7 +240,7 @@ format_usage_part() {
         icon=$(timer_icon_for_seconds "$seconds_left" "$window_seconds")
         local time_str
         time_str=$(format_time_remaining "$seconds_left")
-        reset_str=" ${COLOR_GRAY}${icon} ${time_str}${COLOR_RESET}"
+        reset_str=" ${COLOR_GRAY}${time_str} ${icon}${COLOR_RESET}"
     fi
 
     echo -e "${COLOR_GRAY}${label}:${COLOR_RESET} ${color}${value}%${COLOR_RESET}${reset_str}"

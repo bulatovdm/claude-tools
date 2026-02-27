@@ -57,12 +57,12 @@ run_func_with_cache() {
     bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; $*"
 }
 
-NOW_EPOCH=$(date +%s)
-RESET_2H=$(date -r $((NOW_EPOCH + 7200)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
-RESET_6D=$(date -r $((NOW_EPOCH + 518400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
-RESET_30M=$(date -r $((NOW_EPOCH + 1800)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
-RESET_PAST=$(date -r $((NOW_EPOCH - 60)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
-RESET_4H=$(date -r $((NOW_EPOCH + 14400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+NOW_EPOCH=$(date -u +%s)
+RESET_2H=$(TZ=UTC date -r $((NOW_EPOCH + 7200)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_6D=$(TZ=UTC date -r $((NOW_EPOCH + 518400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_30M=$(TZ=UTC date -r $((NOW_EPOCH + 1800)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_PAST=$(TZ=UTC date -r $((NOW_EPOCH - 60)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+RESET_4H=$(TZ=UTC date -r $((NOW_EPOCH + 14400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
 
 echo "=== statusline.sh tests ==="
 echo ""
@@ -177,6 +177,12 @@ assert_equals "2h from now ~7200" "$result_ok" "ok"
 
 result=$(run_func "seconds_until_reset '' 2>/dev/null || echo 'error'")
 assert_equals "empty returns error" "$result" "error"
+
+# Verify UTC parsing works from non-UTC timezone
+utc_future=$(TZ=UTC date -r $((NOW_EPOCH + 3600)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
+result=$(TZ=America/New_York run_func "seconds_until_reset '$utc_future'")
+(( result >= 3500 && result <= 3600 )) && tz_ok="ok" || tz_ok="bad: $result"
+assert_equals "UTC timestamp parsed correctly from non-UTC zone" "$tz_ok" "ok"
 
 echo ""
 echo "[timer_icon_for_seconds]"
