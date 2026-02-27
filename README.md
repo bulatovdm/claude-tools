@@ -6,27 +6,30 @@ Custom tools and scripts for [Claude Code](https://claude.ai/claude-code) CLI.
 
 ### Status Line
 
-Visual progress bar showing context usage and autocompact warning:
+Visual status bar showing model, context usage, and subscription limits:
 
 ```
-Context: ████░░░░░░ 45%
+Opus │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% │ Week: 35%
 ```
 
-When approaching autocompact (≤10% remaining):
+- **Model** — current model name (cyan)
+- **Context** — context window usage with progress bar (green → yellow → red)
+- **5h** — 5-hour usage window utilization
+- **Week** — 7-day usage window utilization
 
-```
-Context: ███████░░░ 70% │ AC: ░░░░░░░░░░ 7%
-```
+All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
 
-- **Context** — usage percentage (green → yellow → red)
-- **AC** — remaining until autocompact triggers (appears at ≤10%)
+Usage limits are fetched from Anthropic API every 60 seconds and cached locally.
 
-Autocompact triggers at 77% usage (22.5% buffer reserved).
+### Authentication
+
+The status line uses the OAuth token from macOS Keychain (stored by Claude Code automatically). No additional setup required for Pro/Max subscribers.
 
 ## Requirements
 
 - [Claude Code](https://claude.ai/claude-code) CLI
 - `jq` — JSON processor
+- macOS (uses `security` command for Keychain access)
 
 ```bash
 brew install jq
@@ -72,11 +75,12 @@ Add to `~/.claude/settings.json`:
 ./install.sh --help       # Show help
 ```
 
-### Testing Status Line
+### Testing
 
 ```bash
-~/.claude/statusline.sh --test
-~/.claude/statusline.sh --help
+bash tests/statusline_test.sh    # Run tests
+~/.claude/statusline.sh --test   # Visual preview
+~/.claude/statusline.sh --help   # Show help
 ```
 
 ## Uninstallation
