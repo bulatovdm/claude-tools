@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="3.3.0"
+readonly VERSION="3.3.1"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -161,13 +161,13 @@ timer_icon_for_seconds() {
 
     local pct=$(( seconds * 100 / window_seconds ))
 
-    if (( pct > 75 )); then
+    if (( pct > 87 )); then
         echo "●"
-    elif (( pct > 50 )); then
+    elif (( pct > 62 )); then
         echo "◕"
-    elif (( pct > 25 )); then
+    elif (( pct > 37 )); then
         echo "◑"
-    elif (( pct > 0 )); then
+    elif (( pct > 12 )); then
         echo "◔"
     else
         echo "○"

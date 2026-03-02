@@ -276,7 +276,7 @@ assert_contains "shows timer icon" "$result" "◑"
 assert_contains "shows reset time" "$result" "h"
 
 result=$(run_func "format_usage_part '5h' '20' '$RESET_4H' 18000" | strip_colors)
-assert_contains "4h shows three-quarter icon" "$result" "●"
+assert_contains "4h shows three-quarter icon" "$result" "◕"
 
 result=$(run_func "format_usage_part '5h' '20' '' 18000" | strip_colors)
 assert_contains "no reset without timestamp" "$result" "5h: 20%"

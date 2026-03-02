@@ -20,7 +20,7 @@ Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 
 - **Cost** — session cost in USD
 - **Time** — session duration
 
-Timer icons show remaining time until limit reset: ● (full) → ◕ → ◑ → ◔ → ○ (empty, reset imminent).
+Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) → ◑ (>37%) → ◔ (>12%) → ○ (reset imminent).
 
 All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
 
