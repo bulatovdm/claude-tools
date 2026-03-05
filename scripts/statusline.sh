@@ -92,6 +92,14 @@ parse_used_percentage() {
 
 parse_model_name() {
     local input=$1
+    local session_id
+    session_id=$(echo "$input" | jq -r '.session_id // empty')
+
+    if [[ -n "$session_id" && -f "/tmp/claude-model-${session_id}" ]]; then
+        cat "/tmp/claude-model-${session_id}"
+        return
+    fi
+
     echo "$input" | jq -r '.model.display_name // "?"'
 }
 

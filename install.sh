@@ -6,6 +6,7 @@ readonly SCRIPT_NAME=$(basename "$0")
 readonly VERSION="1.0.0"
 readonly CLAUDE_DIR="$HOME/.claude"
 readonly SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)/scripts"
+readonly HOOKS_DIR="$SCRIPTS_DIR/hooks"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -122,6 +123,56 @@ install_statusline() {
     log_success "Installed: $target"
 }
 
+install_hooks() {
+    local force=${1:-false}
+    local hooks_target_dir="$CLAUDE_DIR/hooks"
+
+    mkdir -p "$hooks_target_dir"
+
+    local target="$hooks_target_dir/save-model.sh"
+    local source="$HOOKS_DIR/save-model.sh"
+
+    if [ -f "$target" ] && [ "$force" != "true" ]; then
+        log_warning "hooks/save-model.sh already exists. Use --force to overwrite"
+        return 0
+    fi
+
+    if [ -f "$target" ]; then
+        backup_file "$target"
+    fi
+
+    cp "$source" "$target"
+    chmod +x "$target"
+    log_success "Installed: $target"
+}
+
+configure_hooks_settings() {
+    local settings_file="$CLAUDE_DIR/settings.json"
+    local hook_command="~/.claude/hooks/save-model.sh"
+
+    if [ ! -f "$settings_file" ]; then
+        return 0
+    fi
+
+    local already_configured
+    already_configured=$(jq --arg cmd "$hook_command" '
+        [.hooks.SessionStart[]?.hooks[]? | select(.command == $cmd)] | length
+    ' "$settings_file" 2>/dev/null || echo 0)
+
+    if [ "$already_configured" != "0" ]; then
+        log_warning "save-model hook already configured in settings.json"
+        return 0
+    fi
+
+    backup_file "$settings_file"
+    jq --arg cmd "$hook_command" '
+        .hooks.SessionStart += [{"matcher": "", "hooks": [{"type": "command", "command": $cmd, "async": true}]}] |
+        .hooks.ConfigChange += [{"matcher": "user_settings", "hooks": [{"type": "command", "command": $cmd, "async": true}]}]
+    ' "$settings_file" > "${settings_file}.tmp"
+    mv "${settings_file}.tmp" "$settings_file"
+    log_success "Configured hooks in settings.json"
+}
+
 configure_settings() {
     local settings_file="$CLAUDE_DIR/settings.json"
     local statusline_config='{"type":"command","command":"~/.claude/statusline.sh"}'
@@ -154,7 +205,9 @@ do_install() {
     ensure_claude_dir
 
     install_statusline "$force"
+    install_hooks "$force"
     configure_settings
+    configure_hooks_settings
 
     echo
     log_success "Installation complete!"
@@ -175,11 +228,19 @@ do_uninstall() {
         log_warning "Not found: $statusline"
     fi
 
+    local hook="$CLAUDE_DIR/hooks/save-model.sh"
+    if [ -f "$hook" ]; then
+        rm "$hook"
+        log_success "Removed: $hook"
+    else
+        log_warning "Not found: $hook"
+    fi
+
     if [ -f "$settings" ] && jq -e '.statusLine' "$settings" > /dev/null 2>&1; then
         backup_file "$settings"
-        jq 'del(.statusLine)' "$settings" > "${settings}.tmp"
+        jq 'del(.statusLine) | del(.hooks.SessionStart[] | select(.hooks[]?.command == "~/.claude/hooks/save-model.sh")) | del(.hooks.ConfigChange[] | select(.hooks[]?.command == "~/.claude/hooks/save-model.sh"))' "$settings" > "${settings}.tmp" 2>/dev/null || jq 'del(.statusLine)' "$settings" > "${settings}.tmp"
         mv "${settings}.tmp" "$settings"
-        log_success "Removed statusLine from settings.json"
+        log_success "Removed statusLine and hooks from settings.json"
     fi
 
     echo
@@ -199,10 +260,23 @@ do_status() {
         log_warning "statusline.sh: not installed"
     fi
 
-    if [ -f "$settings" ] && jq -e '.statusLine' "$settings" > /dev/null 2>&1; then
-        log_success "settings.json: configured"
+    local hook="$CLAUDE_DIR/hooks/save-model.sh"
+    if [ -f "$hook" ]; then
+        log_success "hooks/save-model.sh: installed"
     else
-        log_warning "settings.json: not configured"
+        log_warning "hooks/save-model.sh: not installed"
+    fi
+
+    if [ -f "$settings" ] && jq -e '.statusLine' "$settings" > /dev/null 2>&1; then
+        log_success "settings.json: statusLine configured"
+    else
+        log_warning "settings.json: statusLine not configured"
+    fi
+
+    if [ -f "$settings" ] && jq -e '.hooks.SessionStart' "$settings" > /dev/null 2>&1; then
+        log_success "settings.json: hooks configured"
+    else
+        log_warning "settings.json: hooks not configured"
     fi
 }
 
