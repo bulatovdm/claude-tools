@@ -18,8 +18,13 @@ readonly BAR_EMPTY="░"
 
 readonly USAGE_CACHE_FILE="/tmp/claude-statusline-usage-cache"
 readonly USAGE_CACHE_RETRY_FILE="/tmp/claude-statusline-usage-retry"
-readonly USAGE_CACHE_MAX_AGE=120
-readonly USAGE_CACHE_STALE_AGE=600
+readonly USAGE_CACHE_REFRESH_FAILED_FILE="/tmp/claude-statusline-refresh-failed"
+readonly USAGE_CACHE_LOCK_FILE="/tmp/claude-statusline-usage-lock"
+readonly USAGE_CACHE_MAX_AGE=300
+readonly USAGE_CACHE_STALE_AGE=900
+readonly USAGE_CACHE_LOCK_TIMEOUT=10
+readonly OAUTH_REFRESH_MAX_ATTEMPTS=2
+readonly OAUTH_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 show_help() {
     cat << EOF
@@ -189,22 +194,60 @@ usage_cache_is_stale() {
     now=$(date +%s)
     local cache_age=$(( now - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) ))
     local retry_age=$(( now - $(stat -f %m "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || echo 0) ))
+    local failed_age=$(( now - $(stat -f %m "$USAGE_CACHE_REFRESH_FAILED_FILE" 2>/dev/null || echo 0) ))
 
-    [[ ! -f "$USAGE_CACHE_FILE" ]] && [[ ! -f "$USAGE_CACHE_RETRY_FILE" ]] && return 0
+    [[ ! -f "$USAGE_CACHE_FILE" ]] && [[ ! -f "$USAGE_CACHE_RETRY_FILE" ]] && [[ ! -f "$USAGE_CACHE_REFRESH_FAILED_FILE" ]] && return 0
     (( cache_age <= USAGE_CACHE_MAX_AGE )) && return 1
     (( retry_age <= USAGE_CACHE_MAX_AGE )) && return 1
+    (( failed_age <= USAGE_CACHE_MAX_AGE )) && return 1
     return 0
 }
 
-fetch_usage_limits() {
+read_credentials() {
+    local raw
+    raw=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || return 1
+    if echo "$raw" | jq -e '.' >/dev/null 2>&1; then
+        echo "$raw"
+    else
+        echo "$raw" | xxd -r -p 2>/dev/null
+    fi
+}
+
+refresh_oauth_token() {
     local credentials
-    local token
+    local refresh_token
     local response
+    local new_access_token
+    local new_refresh_token
 
-    credentials=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || return 1
-    token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || return 1
+    credentials=$(read_credentials) || return 1
+    refresh_token=$(echo "$credentials" | jq -r '.claudeAiOauth.refreshToken // empty') || return 1
+    [[ -z "$refresh_token" ]] && return 1
 
-    [[ -z "$token" ]] && return 1
+    response=$(curl -s --max-time 10 \
+        "https://console.anthropic.com/v1/oauth/token" \
+        -H "Content-Type: application/json" \
+        -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"${refresh_token}\",\"client_id\":\"${OAUTH_CLIENT_ID}\"}" \
+        2>/dev/null) || return 1
+
+    new_access_token=$(echo "$response" | jq -r '.access_token // empty')
+    new_refresh_token=$(echo "$response" | jq -r '.refresh_token // empty')
+
+    [[ -z "$new_access_token" || -z "$new_refresh_token" ]] && return 1
+
+    local updated_credentials
+    updated_credentials=$(echo "$credentials" | jq \
+        --arg at "$new_access_token" \
+        --arg rt "$new_refresh_token" \
+        '.claudeAiOauth.accessToken = $at | .claudeAiOauth.refreshToken = $rt') || return 1
+
+    security add-generic-password -s "Claude Code-credentials" -a "Claude Code-credentials" \
+        -w "$updated_credentials" -U 2>/dev/null || return 1
+}
+
+request_usage_with_token() {
+    local token=$1
+    local response
 
     response=$(curl -s --max-time 5 \
         "https://api.anthropic.com/api/oauth/usage" \
@@ -216,15 +259,61 @@ fetch_usage_limits() {
     echo "$response" > "$USAGE_CACHE_FILE"
 }
 
+fetch_usage_limits() {
+    local credentials
+    local token
+
+    credentials=$(read_credentials) || return 1
+    token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || return 1
+    [[ -z "$token" ]] && return 1
+
+    request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
+
+    local attempt=0
+    while (( attempt < OAUTH_REFRESH_MAX_ATTEMPTS )); do
+        attempt=$(( attempt + 1 ))
+        refresh_oauth_token || break
+
+        credentials=$(read_credentials) || break
+        token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || break
+        [[ -z "$token" ]] && break
+
+        request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
+    done
+
+    touch "$USAGE_CACHE_REFRESH_FAILED_FILE" 2>/dev/null || true
+    return 1
+}
+
 usage_cache_is_valid() {
     [[ -f "$USAGE_CACHE_FILE" ]] && \
     (( $(date +%s) - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) < USAGE_CACHE_STALE_AGE )) && \
     jq -e '.five_hour' "$USAGE_CACHE_FILE" >/dev/null 2>&1
 }
 
+fetch_usage_limits_if_still_stale() {
+    usage_cache_is_stale || return 0
+    fetch_usage_limits || touch "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || true
+}
+
+with_fetch_lock() {
+    local lock_fd
+    exec {lock_fd}>"$USAGE_CACHE_LOCK_FILE" 2>/dev/null || { "$@"; return; }
+    if flock -w "$USAGE_CACHE_LOCK_TIMEOUT" "$lock_fd" 2>/dev/null; then
+        "$@"
+        flock -u "$lock_fd" 2>/dev/null
+    fi
+    exec {lock_fd}>&- 2>/dev/null
+}
+
 get_usage_limits() {
     if usage_cache_is_stale; then
-        fetch_usage_limits || touch "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || true
+        with_fetch_lock fetch_usage_limits_if_still_stale
+    fi
+
+    if [[ -f "$USAGE_CACHE_REFRESH_FAILED_FILE" ]]; then
+        echo "refresh_failed|||||"
+        return
     fi
 
     if usage_cache_is_valid; then
@@ -280,6 +369,7 @@ format_output() {
     local sonnet_reset=$8
     local cost=$9
     local duration_ms=${10}
+    local refresh_failed=${11:-}
 
     local used_color
     local used_bar
@@ -298,7 +388,12 @@ format_output() {
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
 
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}"
+    local refresh_failed_part=""
+    if [[ "$refresh_failed" == "true" ]]; then
+        refresh_failed_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_GRAY}⚠ refresh failed${COLOR_RESET}"
+    fi
+
+    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${refresh_failed_part}"
 }
 
 run_test() {
@@ -347,6 +442,11 @@ main() {
     duration_ms=$(parse_duration "$input")
 
     usage_data=$(get_usage_limits)
+    local refresh_failed="false"
+    if [[ "${usage_data%%|*}" == "refresh_failed" ]]; then
+        refresh_failed="true"
+        usage_data="|||||"
+    fi
     five_hour="${usage_data%%|*}"
     rest="${usage_data#*|}"
     seven_day="${rest%%|*}"
@@ -358,7 +458,7 @@ main() {
     seven_day_reset="${rest%%|*}"
     sonnet_reset="${rest#*|}"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$refresh_failed"
 }
 
 case "${1:-}" in

@@ -54,7 +54,7 @@ run_func() {
 run_func_with_cache() {
     local cache_file=$1
     shift
-    bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; $*"
+    bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; USAGE_CACHE_RETRY_FILE='${cache_file}.retry'; USAGE_CACHE_REFRESH_FAILED_FILE='${cache_file}.failed'; $*"
 }
 
 NOW_EPOCH=$(date -u +%s)
@@ -301,6 +301,55 @@ assert_equals "old cache is stale" "$result" "stale"
 rm -f "$STALE_CACHE"
 
 echo ""
+echo "[fetch lock]"
+
+LOCK_CACHE="/tmp/claude-statusline-test-lock-cache-$$"
+LOCK_FILE="/tmp/claude-statusline-test-lock-$$.lock"
+CALL_COUNT_FILE="/tmp/claude-statusline-test-calls-$$"
+rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE"
+echo 0 > "$CALL_COUNT_FILE"
+
+# fetch_usage_limits_if_still_stale should not fetch if cache was populated while waiting for lock
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    USAGE_CACHE_FILE='$LOCK_CACHE'
+    USAGE_CACHE_RETRY_FILE='${LOCK_CACHE}.retry'
+    USAGE_CACHE_REFRESH_FAILED_FILE='${LOCK_CACHE}.failed'
+    USAGE_CACHE_LOCK_FILE='$LOCK_FILE'
+    USAGE_CACHE_MAX_AGE=9999
+    fetch_usage_limits() {
+        local c=\$(cat '$CALL_COUNT_FILE')
+        echo \$(( c + 1 )) > '$CALL_COUNT_FILE'
+    }
+    echo '{\"five_hour\":{\"utilization\":10.0}}' > '$LOCK_CACHE'
+    fetch_usage_limits_if_still_stale
+    cat '$CALL_COUNT_FILE'
+")
+assert_equals "skips fetch when cache is fresh" "$result" "0"
+
+rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE" "${LOCK_CACHE}.retry" "${LOCK_CACHE}.failed"
+
+echo ""
+echo "[read_credentials]"
+
+JSON_CREDS='{"claudeAiOauth":{"accessToken":"sk-ant-test","refreshToken":"sk-ant-rt-test"}}'
+HEX_CREDS=$(printf '%s' "$JSON_CREDS" | xxd -p | tr -d '\n')
+
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    security() { printf '%s' '$JSON_CREDS'; }
+    read_credentials
+")
+assert_equals "reads plain JSON credentials" "$(echo "$result" | jq -r '.claudeAiOauth.accessToken')" "sk-ant-test"
+
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    security() { printf '%s' '$HEX_CREDS'; }
+    read_credentials
+")
+assert_equals "decodes hex credentials" "$(echo "$result" | jq -r '.claudeAiOauth.accessToken')" "sk-ant-test"
+
+echo ""
 echo "[get_usage_limits from cache]"
 
 READ_CACHE="/tmp/claude-statusline-test-read-$$"
@@ -317,10 +366,34 @@ rm -f "$EMPTY_CACHE"
 result=$(bash -c "
     source '$TEST_SCRIPT'
     USAGE_CACHE_FILE='$EMPTY_CACHE'
+    USAGE_CACHE_RETRY_FILE='${EMPTY_CACHE}.retry'
+    USAGE_CACHE_REFRESH_FAILED_FILE='${EMPTY_CACHE}.failed'
     fetch_usage_limits() { return 1; }
     get_usage_limits
 ")
 assert_equals "no cache returns empty" "$result" "|||||"
+
+FAILED_CACHE="/tmp/claude-statusline-test-failed-$$"
+touch "${FAILED_CACHE}.failed"
+result=$(run_func_with_cache "$FAILED_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits")
+assert_equals "refresh_failed returns marker" "$result" "refresh_failed|||||"
+
+result=$(run_func_with_cache "$FAILED_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits" | grep -c "refresh_failed" || true)
+assert_equals "refresh_failed stops further fetches" "$result" "1"
+
+full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
+    bash -c "
+        source '$TEST_SCRIPT'
+        USAGE_CACHE_FILE='$FAILED_CACHE'
+        USAGE_CACHE_RETRY_FILE='${FAILED_CACHE}.retry'
+        USAGE_CACHE_REFRESH_FAILED_FILE='${FAILED_CACHE}.failed'
+        USAGE_CACHE_MAX_AGE=9999
+        main
+    " | strip_colors)
+assert_contains "refresh_failed shows warning" "$full_output" "refresh failed"
+assert_contains "refresh_failed shows question marks" "$full_output" "5h: ?"
+
+rm -f "$FAILED_CACHE" "${FAILED_CACHE}.retry" "${FAILED_CACHE}.failed"
 
 echo ""
 echo "[Integration]"
