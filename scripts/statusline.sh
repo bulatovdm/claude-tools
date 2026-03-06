@@ -17,7 +17,9 @@ readonly BAR_FILLED="█"
 readonly BAR_EMPTY="░"
 
 readonly USAGE_CACHE_FILE="/tmp/claude-statusline-usage-cache"
-readonly USAGE_CACHE_MAX_AGE=60
+readonly USAGE_CACHE_RETRY_FILE="/tmp/claude-statusline-usage-retry"
+readonly USAGE_CACHE_MAX_AGE=120
+readonly USAGE_CACHE_STALE_AGE=600
 
 show_help() {
     cat << EOF
@@ -183,8 +185,15 @@ timer_icon_for_seconds() {
 }
 
 usage_cache_is_stale() {
-    [[ ! -f "$USAGE_CACHE_FILE" ]] || \
-    (( $(date +%s) - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) > USAGE_CACHE_MAX_AGE ))
+    local now
+    now=$(date +%s)
+    local cache_age=$(( now - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) ))
+    local retry_age=$(( now - $(stat -f %m "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || echo 0) ))
+
+    [[ ! -f "$USAGE_CACHE_FILE" ]] && [[ ! -f "$USAGE_CACHE_RETRY_FILE" ]] && return 0
+    (( cache_age <= USAGE_CACHE_MAX_AGE )) && return 1
+    (( retry_age <= USAGE_CACHE_MAX_AGE )) && return 1
+    return 0
 }
 
 fetch_usage_limits() {
@@ -207,12 +216,18 @@ fetch_usage_limits() {
     echo "$response" > "$USAGE_CACHE_FILE"
 }
 
+usage_cache_is_valid() {
+    [[ -f "$USAGE_CACHE_FILE" ]] && \
+    (( $(date +%s) - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) < USAGE_CACHE_STALE_AGE )) && \
+    jq -e '.five_hour' "$USAGE_CACHE_FILE" >/dev/null 2>&1
+}
+
 get_usage_limits() {
     if usage_cache_is_stale; then
-        fetch_usage_limits || true
+        fetch_usage_limits || touch "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || true
     fi
 
-    if [[ -f "$USAGE_CACHE_FILE" ]]; then
+    if usage_cache_is_valid; then
         local five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset
         five_hour=$(jq -r '.five_hour.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
         seven_day=$(jq -r '.seven_day.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)

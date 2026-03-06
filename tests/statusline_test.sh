@@ -69,7 +69,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "3.3.0"
+assert_contains "shows version" "$result" "3.3.1"
 
 echo ""
 echo "[Help]"
