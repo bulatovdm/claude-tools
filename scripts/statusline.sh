@@ -297,13 +297,13 @@ fetch_usage_limits_if_still_stale() {
 }
 
 with_fetch_lock() {
-    local lock_fd=9
-    eval "exec $lock_fd>\"$USAGE_CACHE_LOCK_FILE\"" 2>/dev/null || { "$@"; return; }
-    if flock -w "$USAGE_CACHE_LOCK_TIMEOUT" "$lock_fd" 2>/dev/null; then
-        "$@"
-        flock -u "$lock_fd" 2>/dev/null
-    fi
-    eval "exec $lock_fd>&-" 2>/dev/null
+    local deadline=$(( $(date +%s) + USAGE_CACHE_LOCK_TIMEOUT ))
+    until mkdir "$USAGE_CACHE_LOCK_FILE" 2>/dev/null; do
+        (( $(date +%s) >= deadline )) && { "$@"; return; }
+        sleep 0.2
+    done
+    "$@"
+    rmdir "$USAGE_CACHE_LOCK_FILE" 2>/dev/null || true
 }
 
 get_usage_limits() {

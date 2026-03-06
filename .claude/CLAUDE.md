@@ -44,5 +44,6 @@ Claude Code запускает скрипт через `/bin/bash`, которы
 
 **Не использовать в скрипте:**
 - `exec {fd}>file` — динамические fd (только bash 4.1+), использовать `eval "exec 9>file"`
+- `flock` — нет на macOS, использовать `mkdir` как атомарный лок
 
 Всегда тестировать через `/bin/bash scripts/statusline.sh`, а не через `bash`.
