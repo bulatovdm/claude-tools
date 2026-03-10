@@ -349,6 +349,18 @@ result=$(bash -c "
 ")
 assert_equals "decodes hex credentials" "$(echo "$result" | jq -r '.claudeAiOauth.accessToken')" "sk-ant-test"
 
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    credentials_are_hex_encoded '$HEX_CREDS' && echo hex || echo plain
+")
+assert_equals "detects hex format" "$result" "hex"
+
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    credentials_are_hex_encoded '$JSON_CREDS' && echo hex || echo plain
+")
+assert_equals "detects plain JSON format" "$result" "plain"
+
 echo ""
 echo "[get_usage_limits from cache]"
 

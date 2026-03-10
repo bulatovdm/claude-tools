@@ -203,14 +203,36 @@ usage_cache_is_stale() {
     return 0
 }
 
+credentials_are_hex_encoded() {
+    local raw=$1
+    echo "$raw" | jq -e '.' >/dev/null 2>&1 && return 1
+    return 0
+}
+
 read_credentials() {
     local raw
     raw=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || return 1
-    if echo "$raw" | jq -e '.' >/dev/null 2>&1; then
-        echo "$raw"
-    else
+    if credentials_are_hex_encoded "$raw"; then
         echo "$raw" | xxd -r -p 2>/dev/null
+    else
+        echo "$raw"
     fi
+}
+
+write_credentials() {
+    local json=$1
+    local raw
+    raw=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || return 1
+
+    local encoded
+    if credentials_are_hex_encoded "$raw"; then
+        encoded=$(printf '%s' "$json" | xxd -p | tr -d '\n')
+    else
+        encoded=$json
+    fi
+
+    security add-generic-password -s "Claude Code-credentials" -a "Claude Code-credentials" \
+        -w "$encoded" -U 2>/dev/null || return 1
 }
 
 refresh_oauth_token() {
@@ -241,8 +263,7 @@ refresh_oauth_token() {
         --arg rt "$new_refresh_token" \
         '.claudeAiOauth.accessToken = $at | .claudeAiOauth.refreshToken = $rt') || return 1
 
-    security add-generic-password -s "Claude Code-credentials" -a "Claude Code-credentials" \
-        -w "$updated_credentials" -U 2>/dev/null || return 1
+    write_credentials "$updated_credentials" || return 1
 }
 
 request_usage_with_token() {
