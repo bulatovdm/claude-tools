@@ -20,9 +20,11 @@ readonly USAGE_CACHE_FILE="/tmp/claude-statusline-usage-cache"
 readonly USAGE_CACHE_RETRY_FILE="/tmp/claude-statusline-usage-retry"
 readonly USAGE_CACHE_REFRESH_FAILED_FILE="/tmp/claude-statusline-refresh-failed"
 readonly USAGE_CACHE_LOCK_FILE="/tmp/claude-statusline-usage-lock"
+readonly USAGE_LOG_FILE="/tmp/claude-statusline.log"
 readonly USAGE_CACHE_MAX_AGE=300
 readonly USAGE_CACHE_STALE_AGE=900
 readonly USAGE_CACHE_LOCK_TIMEOUT=10
+readonly USAGE_CACHE_LOCK_STALE_AGE=60
 readonly OAUTH_REFRESH_MAX_ATTEMPTS=2
 readonly OAUTH_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
@@ -203,6 +205,10 @@ usage_cache_is_stale() {
     return 0
 }
 
+log_event() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$USAGE_LOG_FILE" 2>/dev/null
+}
+
 credentials_are_hex_encoded() {
     local raw=$1
     echo "$raw" | jq -e '.' >/dev/null 2>&1 && return 1
@@ -246,16 +252,23 @@ refresh_oauth_token() {
     refresh_token=$(echo "$credentials" | jq -r '.claudeAiOauth.refreshToken // empty') || return 1
     [[ -z "$refresh_token" ]] && return 1
 
+    log_event "refresh: requesting new token"
+
     response=$(curl -s --max-time 10 \
         "https://console.anthropic.com/v1/oauth/token" \
         -H "Content-Type: application/json" \
         -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"${refresh_token}\",\"client_id\":\"${OAUTH_CLIENT_ID}\"}" \
-        2>/dev/null) || return 1
+        2>/dev/null) || { log_event "refresh: curl failed"; return 1; }
 
     new_access_token=$(echo "$response" | jq -r '.access_token // empty')
     new_refresh_token=$(echo "$response" | jq -r '.refresh_token // empty')
 
-    [[ -z "$new_access_token" || -z "$new_refresh_token" ]] && return 1
+    if [[ -z "$new_access_token" || -z "$new_refresh_token" ]]; then
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error // .error_description // "unknown"' 2>/dev/null)
+        log_event "refresh: failed - $error_msg"
+        return 1
+    fi
 
     local updated_credentials
     updated_credentials=$(echo "$credentials" | jq \
@@ -263,7 +276,8 @@ refresh_oauth_token() {
         --arg rt "$new_refresh_token" \
         '.claudeAiOauth.accessToken = $at | .claudeAiOauth.refreshToken = $rt') || return 1
 
-    write_credentials "$updated_credentials" || return 1
+    write_credentials "$updated_credentials" || { log_event "refresh: write_credentials failed"; return 1; }
+    log_event "refresh: success, token=${new_access_token:0:20}..."
 }
 
 request_usage_with_token() {
@@ -273,20 +287,27 @@ request_usage_with_token() {
     response=$(curl -s --max-time 5 \
         "https://api.anthropic.com/api/oauth/usage" \
         -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || return 1
+        -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || { log_event "api: curl failed"; return 1; }
 
-    echo "$response" | jq -e '.five_hour' >/dev/null 2>&1 || return 1
+    if echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+        log_event "api: success"
+        echo "$response" > "$USAGE_CACHE_FILE"
+        return 0
+    fi
 
-    echo "$response" > "$USAGE_CACHE_FILE"
+    local error_msg
+    error_msg=$(echo "$response" | jq -r '.error.type // .error.message // "unknown"' 2>/dev/null)
+    log_event "api: failed - $error_msg"
+    return 1
 }
 
 fetch_usage_limits() {
     local credentials
     local token
 
-    credentials=$(read_credentials) || return 1
+    credentials=$(read_credentials) || { log_event "fetch: no credentials"; return 1; }
     token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || return 1
-    [[ -z "$token" ]] && return 1
+    [[ -z "$token" ]] && { log_event "fetch: empty token"; return 1; }
 
     request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
 
@@ -317,14 +338,23 @@ fetch_usage_limits_if_still_stale() {
     fetch_usage_limits || touch "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || true
 }
 
+cleanup_stale_lock() {
+    [[ -d "$USAGE_CACHE_LOCK_FILE" ]] || return 0
+    local lock_age=$(( $(date +%s) - $(stat -f %m "$USAGE_CACHE_LOCK_FILE" 2>/dev/null || echo 0) ))
+    (( lock_age > USAGE_CACHE_LOCK_STALE_AGE )) && rmdir "$USAGE_CACHE_LOCK_FILE" 2>/dev/null || true
+}
+
 with_fetch_lock() {
+    cleanup_stale_lock
     local deadline=$(( $(date +%s) + USAGE_CACHE_LOCK_TIMEOUT ))
     until mkdir "$USAGE_CACHE_LOCK_FILE" 2>/dev/null; do
         (( $(date +%s) >= deadline )) && { "$@"; return; }
         sleep 0.2
     done
+    trap 'rmdir "$USAGE_CACHE_LOCK_FILE" 2>/dev/null || true' EXIT
     "$@"
     rmdir "$USAGE_CACHE_LOCK_FILE" 2>/dev/null || true
+    trap - EXIT
 }
 
 get_usage_limits() {
