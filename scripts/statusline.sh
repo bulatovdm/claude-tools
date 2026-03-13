@@ -304,21 +304,36 @@ request_usage_with_token() {
 fetch_usage_limits() {
     local credentials
     local token
+    local original_token
 
     credentials=$(read_credentials) || { log_event "fetch: no credentials"; return 1; }
     token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || return 1
     [[ -z "$token" ]] && { log_event "fetch: empty token"; return 1; }
+    original_token=$token
 
     request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
 
     local attempt=0
     while (( attempt < OAUTH_REFRESH_MAX_ATTEMPTS )); do
         attempt=$(( attempt + 1 ))
+
+        credentials=$(read_credentials) || break
+        token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || break
+        [[ -z "$token" ]] && break
+
+        if [[ "$token" != "$original_token" ]]; then
+            log_event "fetch: token changed externally, retrying"
+            original_token=$token
+            request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
+            continue
+        fi
+
         refresh_oauth_token || break
 
         credentials=$(read_credentials) || break
         token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || break
         [[ -z "$token" ]] && break
+        original_token=$token
 
         request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
     done

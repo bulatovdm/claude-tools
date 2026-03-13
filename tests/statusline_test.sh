@@ -417,6 +417,8 @@ full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_n
     bash -c "
         source '$TEST_SCRIPT'
         USAGE_CACHE_FILE='$INT_CACHE'
+        USAGE_CACHE_RETRY_FILE='${INT_CACHE}.retry'
+        USAGE_CACHE_REFRESH_FAILED_FILE='${INT_CACHE}.failed'
         USAGE_CACHE_MAX_AGE=9999
         main
     " | strip_colors)
