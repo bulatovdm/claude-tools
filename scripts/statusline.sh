@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="3.3.1"
+readonly VERSION="4.0.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -18,15 +18,13 @@ readonly BAR_EMPTY="░"
 
 readonly USAGE_CACHE_FILE="/tmp/claude-statusline-usage-cache"
 readonly USAGE_CACHE_RETRY_FILE="/tmp/claude-statusline-usage-retry"
-readonly USAGE_CACHE_REFRESH_FAILED_FILE="/tmp/claude-statusline-refresh-failed"
+readonly USAGE_CACHE_RETRY_AFTER_FILE="/tmp/claude-statusline-retry-after"
 readonly USAGE_CACHE_LOCK_FILE="/tmp/claude-statusline-usage-lock"
 readonly USAGE_LOG_FILE="/tmp/claude-statusline.log"
-readonly USAGE_CACHE_MAX_AGE=300
-readonly USAGE_CACHE_STALE_AGE=900
+readonly USAGE_CACHE_MAX_AGE=900
+readonly USAGE_CACHE_STALE_AGE=3600
 readonly USAGE_CACHE_LOCK_TIMEOUT=10
 readonly USAGE_CACHE_LOCK_STALE_AGE=60
-readonly OAUTH_REFRESH_MAX_ATTEMPTS=2
-readonly OAUTH_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 show_help() {
     cat << EOF
@@ -191,17 +189,26 @@ timer_icon_for_seconds() {
     fi
 }
 
+retry_after_is_active() {
+    [[ ! -f "$USAGE_CACHE_RETRY_AFTER_FILE" ]] && return 1
+    local deadline
+    deadline=$(cat "$USAGE_CACHE_RETRY_AFTER_FILE" 2>/dev/null) || return 1
+    local now
+    now=$(date +%s)
+    (( now < deadline ))
+}
+
 usage_cache_is_stale() {
+    retry_after_is_active && return 1
+
     local now
     now=$(date +%s)
     local cache_age=$(( now - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) ))
     local retry_age=$(( now - $(stat -f %m "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || echo 0) ))
-    local failed_age=$(( now - $(stat -f %m "$USAGE_CACHE_REFRESH_FAILED_FILE" 2>/dev/null || echo 0) ))
 
-    [[ ! -f "$USAGE_CACHE_FILE" ]] && [[ ! -f "$USAGE_CACHE_RETRY_FILE" ]] && [[ ! -f "$USAGE_CACHE_REFRESH_FAILED_FILE" ]] && return 0
+    [[ ! -f "$USAGE_CACHE_FILE" ]] && [[ ! -f "$USAGE_CACHE_RETRY_FILE" ]] && return 0
     (( cache_age <= USAGE_CACHE_MAX_AGE )) && return 1
     (( retry_age <= USAGE_CACHE_MAX_AGE )) && return 1
-    (( failed_age <= USAGE_CACHE_MAX_AGE )) && return 1
     return 0
 }
 
@@ -225,74 +232,32 @@ read_credentials() {
     fi
 }
 
-write_credentials() {
-    local json=$1
-    local raw
-    raw=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || return 1
-
-    local encoded
-    if credentials_are_hex_encoded "$raw"; then
-        encoded=$(printf '%s' "$json" | xxd -p | tr -d '\n')
-    else
-        encoded=$json
-    fi
-
-    security add-generic-password -s "Claude Code-credentials" -a "Claude Code-credentials" \
-        -w "$encoded" -U 2>/dev/null || return 1
-}
-
-refresh_oauth_token() {
-    local credentials
-    local refresh_token
-    local response
-    local new_access_token
-    local new_refresh_token
-
-    credentials=$(read_credentials) || return 1
-    refresh_token=$(echo "$credentials" | jq -r '.claudeAiOauth.refreshToken // empty') || return 1
-    [[ -z "$refresh_token" ]] && return 1
-
-    log_event "refresh: requesting new token"
-
-    response=$(curl -s --max-time 10 \
-        "https://console.anthropic.com/v1/oauth/token" \
-        -H "Content-Type: application/json" \
-        -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"${refresh_token}\",\"client_id\":\"${OAUTH_CLIENT_ID}\"}" \
-        2>/dev/null) || { log_event "refresh: curl failed"; return 1; }
-
-    new_access_token=$(echo "$response" | jq -r '.access_token // empty')
-    new_refresh_token=$(echo "$response" | jq -r '.refresh_token // empty')
-
-    if [[ -z "$new_access_token" || -z "$new_refresh_token" ]]; then
-        local error_msg
-        error_msg=$(echo "$response" | jq -r '.error // .error_description // "unknown"' 2>/dev/null)
-        log_event "refresh: failed - $error_msg"
-        return 1
-    fi
-
-    local updated_credentials
-    updated_credentials=$(echo "$credentials" | jq \
-        --arg at "$new_access_token" \
-        --arg rt "$new_refresh_token" \
-        '.claudeAiOauth.accessToken = $at | .claudeAiOauth.refreshToken = $rt') || return 1
-
-    write_credentials "$updated_credentials" || { log_event "refresh: write_credentials failed"; return 1; }
-    log_event "refresh: success, token=${new_access_token:0:20}..."
-}
 
 request_usage_with_token() {
     local token=$1
+    local headers_file="/tmp/claude-statusline-headers-$$"
     local response
 
-    response=$(curl -s --max-time 5 \
+    response=$(curl -s --max-time 5 -D "$headers_file" \
         "https://api.anthropic.com/api/oauth/usage" \
         -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || { log_event "api: curl failed"; return 1; }
+        -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || { rm -f "$headers_file"; log_event "api: curl failed"; return 1; }
 
     if echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+        rm -f "$headers_file" "$USAGE_CACHE_RETRY_AFTER_FILE"
         log_event "api: success"
         echo "$response" > "$USAGE_CACHE_FILE"
         return 0
+    fi
+
+    local retry_after
+    retry_after=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | tr -d '\r' | awk '{print $2}')
+    rm -f "$headers_file"
+
+    if [[ -n "$retry_after" && "$retry_after" =~ ^[0-9]+$ ]]; then
+        local deadline=$(( $(date +%s) + retry_after ))
+        echo "$deadline" > "$USAGE_CACHE_RETRY_AFTER_FILE"
+        log_event "api: 429, retry-after=${retry_after}s (until $(date -r "$deadline" '+%H:%M:%S'))"
     fi
 
     local error_msg
@@ -304,41 +269,12 @@ request_usage_with_token() {
 fetch_usage_limits() {
     local credentials
     local token
-    local original_token
 
     credentials=$(read_credentials) || { log_event "fetch: no credentials"; return 1; }
     token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || return 1
     [[ -z "$token" ]] && { log_event "fetch: empty token"; return 1; }
-    original_token=$token
 
-    request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
-
-    local attempt=0
-    while (( attempt < OAUTH_REFRESH_MAX_ATTEMPTS )); do
-        attempt=$(( attempt + 1 ))
-
-        credentials=$(read_credentials) || break
-        token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || break
-        [[ -z "$token" ]] && break
-
-        if [[ "$token" != "$original_token" ]]; then
-            log_event "fetch: token changed externally, retrying"
-            original_token=$token
-            request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
-            continue
-        fi
-
-        refresh_oauth_token || break
-
-        credentials=$(read_credentials) || break
-        token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || break
-        [[ -z "$token" ]] && break
-        original_token=$token
-
-        request_usage_with_token "$token" && { rm -f "$USAGE_CACHE_REFRESH_FAILED_FILE"; return 0; }
-    done
-
-    touch "$USAGE_CACHE_REFRESH_FAILED_FILE" 2>/dev/null || true
+    request_usage_with_token "$token" && return 0
     return 1
 }
 
@@ -372,25 +308,30 @@ with_fetch_lock() {
     trap - EXIT
 }
 
+read_usage_from_cache() {
+    [[ -f "$USAGE_CACHE_FILE" ]] || return 1
+    jq -e '.five_hour' "$USAGE_CACHE_FILE" >/dev/null 2>&1 || return 1
+
+    local five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset
+    five_hour=$(jq -r '.five_hour.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
+    seven_day=$(jq -r '.seven_day.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
+    sonnet=$(jq -r '.seven_day_sonnet.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
+    five_hour_reset=$(jq -r '.five_hour.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
+    seven_day_reset=$(jq -r '.seven_day.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
+    sonnet_reset=$(jq -r '.seven_day_sonnet.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
+    echo "${five_hour:-}|${seven_day:-}|${sonnet:-}|${five_hour_reset:-}|${seven_day_reset:-}|${sonnet_reset:-}"
+}
+
 get_usage_limits() {
     if usage_cache_is_stale; then
         with_fetch_lock fetch_usage_limits_if_still_stale
     fi
 
-    if [[ -f "$USAGE_CACHE_REFRESH_FAILED_FILE" ]]; then
-        echo "refresh_failed|||||"
-        return
-    fi
+    local result
+    result=$(read_usage_from_cache) && { echo "$result"; return; }
 
-    if usage_cache_is_valid; then
-        local five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset
-        five_hour=$(jq -r '.five_hour.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
-        seven_day=$(jq -r '.seven_day.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
-        sonnet=$(jq -r '.seven_day_sonnet.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
-        five_hour_reset=$(jq -r '.five_hour.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
-        seven_day_reset=$(jq -r '.seven_day.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
-        sonnet_reset=$(jq -r '.seven_day_sonnet.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
-        echo "${five_hour:-}|${seven_day:-}|${sonnet:-}|${five_hour_reset:-}|${seven_day_reset:-}|${sonnet_reset:-}"
+    if retry_after_is_active; then
+        echo "rate_limited|||||"
     else
         echo "|||||"
     fi
@@ -435,7 +376,7 @@ format_output() {
     local sonnet_reset=$8
     local cost=$9
     local duration_ms=${10}
-    local refresh_failed=${11:-}
+    local rate_limited=${11:-}
 
     local used_color
     local used_bar
@@ -454,12 +395,21 @@ format_output() {
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
 
-    local refresh_failed_part=""
-    if [[ "$refresh_failed" == "true" ]]; then
-        refresh_failed_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_GRAY}⚠ refresh failed${COLOR_RESET}"
+    local status_part=""
+    if [[ "$rate_limited" == "true" ]]; then
+        local retry_remaining=""
+        if [[ -f "$USAGE_CACHE_RETRY_AFTER_FILE" ]]; then
+            local deadline now
+            deadline=$(cat "$USAGE_CACHE_RETRY_AFTER_FILE" 2>/dev/null) || deadline=0
+            now=$(date +%s)
+            if (( deadline > now )); then
+                retry_remaining=" $(format_time_remaining $(( deadline - now )))"
+            fi
+        fi
+        status_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_YELLOW}⏳ rate limited${retry_remaining}${COLOR_RESET}"
     fi
 
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${refresh_failed_part}"
+    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${status_part}"
 }
 
 run_test() {
@@ -508,9 +458,9 @@ main() {
     duration_ms=$(parse_duration "$input")
 
     usage_data=$(get_usage_limits)
-    local refresh_failed="false"
-    if [[ "${usage_data%%|*}" == "refresh_failed" ]]; then
-        refresh_failed="true"
+    local rate_limited="false"
+    if [[ "${usage_data%%|*}" == "rate_limited" ]]; then
+        rate_limited="true"
         usage_data="|||||"
     fi
     five_hour="${usage_data%%|*}"
@@ -524,7 +474,7 @@ main() {
     seven_day_reset="${rest%%|*}"
     sonnet_reset="${rest#*|}"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$refresh_failed"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$rate_limited"
 }
 
 case "${1:-}" in

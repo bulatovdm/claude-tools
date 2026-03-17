@@ -54,7 +54,7 @@ run_func() {
 run_func_with_cache() {
     local cache_file=$1
     shift
-    bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; USAGE_CACHE_RETRY_FILE='${cache_file}.retry'; USAGE_CACHE_REFRESH_FAILED_FILE='${cache_file}.failed'; $*"
+    bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; USAGE_CACHE_RETRY_FILE='${cache_file}.retry'; USAGE_CACHE_RETRY_AFTER_FILE='${cache_file}.retryafter'; $*"
 }
 
 NOW_EPOCH=$(date -u +%s)
@@ -69,7 +69,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "3.3.1"
+assert_contains "shows version" "$result" "4.0.0"
 
 echo ""
 echo "[Help]"
@@ -314,7 +314,7 @@ result=$(bash -c "
     source '$TEST_SCRIPT'
     USAGE_CACHE_FILE='$LOCK_CACHE'
     USAGE_CACHE_RETRY_FILE='${LOCK_CACHE}.retry'
-    USAGE_CACHE_REFRESH_FAILED_FILE='${LOCK_CACHE}.failed'
+    USAGE_CACHE_RETRY_AFTER_FILE='${LOCK_CACHE}.retryafter'
     USAGE_CACHE_LOCK_FILE='$LOCK_FILE'
     USAGE_CACHE_MAX_AGE=9999
     fetch_usage_limits() {
@@ -327,7 +327,7 @@ result=$(bash -c "
 ")
 assert_equals "skips fetch when cache is fresh" "$result" "0"
 
-rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE" "${LOCK_CACHE}.retry" "${LOCK_CACHE}.failed"
+rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE" "${LOCK_CACHE}.retry" "${LOCK_CACHE}.retryafter"
 
 echo ""
 echo "[read_credentials]"
@@ -379,33 +379,35 @@ result=$(bash -c "
     source '$TEST_SCRIPT'
     USAGE_CACHE_FILE='$EMPTY_CACHE'
     USAGE_CACHE_RETRY_FILE='${EMPTY_CACHE}.retry'
-    USAGE_CACHE_REFRESH_FAILED_FILE='${EMPTY_CACHE}.failed'
+    USAGE_CACHE_RETRY_AFTER_FILE='${EMPTY_CACHE}.retryafter'
     fetch_usage_limits() { return 1; }
     get_usage_limits
 ")
 assert_equals "no cache returns empty" "$result" "|||||"
 
-FAILED_CACHE="/tmp/claude-statusline-test-failed-$$"
-touch "${FAILED_CACHE}.failed"
-result=$(run_func_with_cache "$FAILED_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits")
-assert_equals "refresh_failed returns marker" "$result" "refresh_failed|||||"
+RATELIMIT_CACHE="/tmp/claude-statusline-test-ratelimit-$$"
+rm -f "$RATELIMIT_CACHE" "${RATELIMIT_CACHE}.retry" "${RATELIMIT_CACHE}.retryafter"
+FUTURE_DEADLINE=$(( $(date +%s) + 2400 ))
+echo "$FUTURE_DEADLINE" > "${RATELIMIT_CACHE}.retryafter"
+result=$(run_func_with_cache "$RATELIMIT_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits")
+assert_equals "rate_limited returns marker" "$result" "rate_limited|||||"
 
-result=$(run_func_with_cache "$FAILED_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits" | grep -c "refresh_failed" || true)
-assert_equals "refresh_failed stops further fetches" "$result" "1"
+result=$(run_func_with_cache "$RATELIMIT_CACHE" "if usage_cache_is_stale; then echo stale; else echo fresh; fi")
+assert_equals "retry_after prevents fetch" "$result" "fresh"
 
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "
         source '$TEST_SCRIPT'
-        USAGE_CACHE_FILE='$FAILED_CACHE'
-        USAGE_CACHE_RETRY_FILE='${FAILED_CACHE}.retry'
-        USAGE_CACHE_REFRESH_FAILED_FILE='${FAILED_CACHE}.failed'
+        USAGE_CACHE_FILE='$RATELIMIT_CACHE'
+        USAGE_CACHE_RETRY_FILE='${RATELIMIT_CACHE}.retry'
+        USAGE_CACHE_RETRY_AFTER_FILE='${RATELIMIT_CACHE}.retryafter'
         USAGE_CACHE_MAX_AGE=9999
         main
     " | strip_colors)
-assert_contains "refresh_failed shows warning" "$full_output" "refresh failed"
-assert_contains "refresh_failed shows question marks" "$full_output" "5h: ?"
+assert_contains "rate_limited shows warning" "$full_output" "rate limited"
+assert_contains "rate_limited shows question marks" "$full_output" "5h: ?"
 
-rm -f "$FAILED_CACHE" "${FAILED_CACHE}.retry" "${FAILED_CACHE}.failed"
+rm -f "$RATELIMIT_CACHE" "${RATELIMIT_CACHE}.retry" "${RATELIMIT_CACHE}.retryafter"
 
 echo ""
 echo "[Integration]"
@@ -418,7 +420,7 @@ full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_n
         source '$TEST_SCRIPT'
         USAGE_CACHE_FILE='$INT_CACHE'
         USAGE_CACHE_RETRY_FILE='${INT_CACHE}.retry'
-        USAGE_CACHE_REFRESH_FAILED_FILE='${INT_CACHE}.failed'
+        USAGE_CACHE_RETRY_AFTER_FILE='${INT_CACHE}.retryafter'
         USAGE_CACHE_MAX_AGE=9999
         main
     " | strip_colors)
