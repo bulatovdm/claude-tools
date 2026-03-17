@@ -24,17 +24,25 @@ Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) →
 
 All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
 
-Usage limits are fetched from Anthropic API every 60 seconds and cached locally.
+### How It Works
 
-### Authentication
+Usage limits are fetched from **claude.ai via Chrome AppleScript** — the script executes an XHR request directly in an open claude.ai browser tab, bypassing Cloudflare and OAuth token issues. Data is cached for 5 minutes.
 
-The status line uses the OAuth token from macOS Keychain (stored by Claude Code automatically). No additional setup required for Pro/Max subscribers.
+If no claude.ai tab is found, one is automatically opened. Error states are shown in the status bar:
+
+| Status | Meaning |
+|--------|---------|
+| `⚠ open Chrome` | Chrome is not running |
+| `⚠ open claude.ai` | No claude.ai tab found (auto-opens one) |
+| `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled |
+| `⚠ API error` | claude.ai API returned an error |
 
 ## Requirements
 
 - [Claude Code](https://claude.ai/claude-code) CLI
 - `jq` — JSON processor
-- macOS (uses `security` command for Keychain access)
+- macOS with Google Chrome
+- **Chrome setting**: View → Developer → Allow JavaScript from Apple Events
 
 ```bash
 brew install jq
@@ -49,6 +57,12 @@ git clone https://github.com/bulatovdm/claude-tools.git
 cd claude-tools
 ./install.sh
 ```
+
+The installer will:
+1. Install the status line script to `~/.claude/`
+2. Configure `settings.json`
+3. Open Chrome with claude.ai if needed
+4. Check that "Allow JavaScript from Apple Events" is enabled
 
 ### Manual Install
 
@@ -67,6 +81,8 @@ Add to `~/.claude/settings.json`:
   }
 }
 ```
+
+Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Events**
 
 ## Usage
 

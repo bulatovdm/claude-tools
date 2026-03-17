@@ -195,6 +195,56 @@ configure_settings() {
     log_success "Updated: $settings_file"
 }
 
+setup_chrome() {
+    if ! pgrep -x "Google Chrome" >/dev/null 2>&1; then
+        log_info "Opening Chrome with claude.ai..."
+        open -a "Google Chrome" "https://claude.ai" 2>/dev/null || true
+        sleep 2
+    else
+        local has_claude_tab
+        has_claude_tab=$(osascript -e '
+            tell application "Google Chrome"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if URL of t contains "claude.ai" then return "yes"
+                    end repeat
+                end repeat
+                return "no"
+            end tell
+        ' 2>/dev/null || echo "no")
+
+        if [[ "$has_claude_tab" != "yes" ]]; then
+            log_info "Opening claude.ai tab in Chrome..."
+            osascript -e 'tell application "Google Chrome" to open location "https://claude.ai"' 2>/dev/null || true
+            sleep 2
+        else
+            log_success "Chrome: claude.ai tab found"
+        fi
+    fi
+
+    local js_test
+    js_test=$(osascript -e '
+        tell application "Google Chrome"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    if URL of t contains "claude.ai" then
+                        return (execute t javascript "\"ok\"")
+                    end if
+                end repeat
+            end repeat
+        end tell
+    ' 2>&1 || true)
+
+    if echo "$js_test" | grep -q "Executing JavaScript through AppleScript is turned off"; then
+        log_warning "Chrome JS from Apple Events is disabled"
+        echo ""
+        echo "  Enable it: Chrome → View → Developer → Allow JavaScript from Apple Events"
+        echo ""
+    elif [[ "$js_test" == "ok" ]]; then
+        log_success "Chrome: JavaScript from Apple Events enabled"
+    fi
+}
+
 do_install() {
     local force=${1:-false}
 
@@ -208,6 +258,7 @@ do_install() {
     install_hooks "$force"
     configure_settings
     configure_hooks_settings
+    setup_chrome
 
     echo
     log_success "Installation complete!"
@@ -277,6 +328,27 @@ do_status() {
         log_success "settings.json: hooks configured"
     else
         log_warning "settings.json: hooks not configured"
+    fi
+
+    if pgrep -x "Google Chrome" >/dev/null 2>&1; then
+        local has_tab
+        has_tab=$(osascript -e '
+            tell application "Google Chrome"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if URL of t contains "claude.ai" then return "yes"
+                    end repeat
+                end repeat
+                return "no"
+            end tell
+        ' 2>/dev/null || echo "no")
+        if [[ "$has_tab" == "yes" ]]; then
+            log_success "Chrome: claude.ai tab open"
+        else
+            log_warning "Chrome: no claude.ai tab (open claude.ai in Chrome)"
+        fi
+    else
+        log_warning "Chrome: not running"
     fi
 }
 

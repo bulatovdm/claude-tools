@@ -54,7 +54,7 @@ run_func() {
 run_func_with_cache() {
     local cache_file=$1
     shift
-    bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; USAGE_CACHE_RETRY_FILE='${cache_file}.retry'; USAGE_CACHE_RETRY_AFTER_FILE='${cache_file}.retryafter'; $*"
+    bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; USAGE_ERROR_FILE='${cache_file}.error'; $*"
 }
 
 NOW_EPOCH=$(date -u +%s)
@@ -69,7 +69,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "4.0.0"
+assert_contains "shows version" "$result" "5.0.0"
 
 echo ""
 echo "[Help]"
@@ -79,6 +79,7 @@ assert_contains "help mentions model" "$result" "model"
 assert_contains "help mentions usage limits" "$result" "limits"
 assert_contains "help mentions cost" "$result" "cost"
 assert_contains "help mentions duration" "$result" "duration"
+assert_contains "help mentions Chrome" "$result" "Chrome"
 
 echo ""
 echo "[parse_used_percentage]"
@@ -263,6 +264,23 @@ assert_contains "contains time" "$output" "Time: 10m"
 assert_contains "contains separators" "$output" "│"
 
 echo ""
+echo "[format_output error state]"
+
+output=$(run_func "format_output 45 Opus '' '' '' '' '' '' 1.25 600000 'open claude.ai'" | strip_colors)
+assert_contains "error shows warning icon" "$output" "⚠"
+assert_contains "error shows message" "$output" "open claude.ai"
+assert_contains "error shows question marks" "$output" "5h: ?"
+
+output_no_error=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 ''" | strip_colors)
+if echo "$output_no_error" | grep -qF "⚠"; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: no error hides warning"
+else
+    PASS=$((PASS + 1))
+    echo "  PASS: no error hides warning"
+fi
+
+echo ""
 echo "[format_usage_part]"
 
 result=$(run_func "format_usage_part '5h' ''" | strip_colors)
@@ -313,8 +331,7 @@ echo 0 > "$CALL_COUNT_FILE"
 result=$(bash -c "
     source '$TEST_SCRIPT'
     USAGE_CACHE_FILE='$LOCK_CACHE'
-    USAGE_CACHE_RETRY_FILE='${LOCK_CACHE}.retry'
-    USAGE_CACHE_RETRY_AFTER_FILE='${LOCK_CACHE}.retryafter'
+    USAGE_ERROR_FILE='${LOCK_CACHE}.error'
     USAGE_CACHE_LOCK_FILE='$LOCK_FILE'
     USAGE_CACHE_MAX_AGE=9999
     fetch_usage_limits() {
@@ -327,39 +344,7 @@ result=$(bash -c "
 ")
 assert_equals "skips fetch when cache is fresh" "$result" "0"
 
-rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE" "${LOCK_CACHE}.retry" "${LOCK_CACHE}.retryafter"
-
-echo ""
-echo "[read_credentials]"
-
-JSON_CREDS='{"claudeAiOauth":{"accessToken":"sk-ant-test","refreshToken":"sk-ant-rt-test"}}'
-HEX_CREDS=$(printf '%s' "$JSON_CREDS" | xxd -p | tr -d '\n')
-
-result=$(bash -c "
-    source '$TEST_SCRIPT'
-    security() { printf '%s' '$JSON_CREDS'; }
-    read_credentials
-")
-assert_equals "reads plain JSON credentials" "$(echo "$result" | jq -r '.claudeAiOauth.accessToken')" "sk-ant-test"
-
-result=$(bash -c "
-    source '$TEST_SCRIPT'
-    security() { printf '%s' '$HEX_CREDS'; }
-    read_credentials
-")
-assert_equals "decodes hex credentials" "$(echo "$result" | jq -r '.claudeAiOauth.accessToken')" "sk-ant-test"
-
-result=$(bash -c "
-    source '$TEST_SCRIPT'
-    credentials_are_hex_encoded '$HEX_CREDS' && echo hex || echo plain
-")
-assert_equals "detects hex format" "$result" "hex"
-
-result=$(bash -c "
-    source '$TEST_SCRIPT'
-    credentials_are_hex_encoded '$JSON_CREDS' && echo hex || echo plain
-")
-assert_equals "detects plain JSON format" "$result" "plain"
+rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE" "${LOCK_CACHE}.error"
 
 echo ""
 echo "[get_usage_limits from cache]"
@@ -367,7 +352,7 @@ echo "[get_usage_limits from cache]"
 READ_CACHE="/tmp/claude-statusline-test-read-$$"
 echo "{\"five_hour\":{\"utilization\":25.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":50.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":10.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$READ_CACHE"
 
-result=$(run_func_with_cache "$READ_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits")
+result=$(run_func_with_cache "$READ_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits")
 assert_contains "reads utilization from cache" "$result" "25|50|10|"
 assert_contains "reads reset times from cache" "$result" "$RESET_2H"
 
@@ -378,36 +363,32 @@ rm -f "$EMPTY_CACHE"
 result=$(bash -c "
     source '$TEST_SCRIPT'
     USAGE_CACHE_FILE='$EMPTY_CACHE'
-    USAGE_CACHE_RETRY_FILE='${EMPTY_CACHE}.retry'
-    USAGE_CACHE_RETRY_AFTER_FILE='${EMPTY_CACHE}.retryafter'
+    USAGE_ERROR_FILE='${EMPTY_CACHE}.error'
     fetch_usage_limits() { return 1; }
     get_usage_limits
 ")
-assert_equals "no cache returns empty" "$result" "|||||"
+assert_contains "no cache returns error prefix" "$result" "error:"
 
-RATELIMIT_CACHE="/tmp/claude-statusline-test-ratelimit-$$"
-rm -f "$RATELIMIT_CACHE" "${RATELIMIT_CACHE}.retry" "${RATELIMIT_CACHE}.retryafter"
-FUTURE_DEADLINE=$(( $(date +%s) + 2400 ))
-echo "$FUTURE_DEADLINE" > "${RATELIMIT_CACHE}.retryafter"
-result=$(run_func_with_cache "$RATELIMIT_CACHE" "USAGE_CACHE_MAX_AGE=9999; get_usage_limits")
-assert_equals "rate_limited returns marker" "$result" "rate_limited|||||"
-
-result=$(run_func_with_cache "$RATELIMIT_CACHE" "if usage_cache_is_stale; then echo stale; else echo fresh; fi")
-assert_equals "retry_after prevents fetch" "$result" "fresh"
+ERROR_CACHE="/tmp/claude-statusline-test-error-$$"
+rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
+echo "open Chrome" > "${ERROR_CACHE}.error"
+result=$(run_func_with_cache "$ERROR_CACHE" "USAGE_CACHE_MAX_AGE=9999; fetch_usage_limits() { return 1; }; get_usage_limits")
+assert_contains "error file content passed through" "$result" "error:open Chrome"
 
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "
         source '$TEST_SCRIPT'
-        USAGE_CACHE_FILE='$RATELIMIT_CACHE'
-        USAGE_CACHE_RETRY_FILE='${RATELIMIT_CACHE}.retry'
-        USAGE_CACHE_RETRY_AFTER_FILE='${RATELIMIT_CACHE}.retryafter'
+        USAGE_CACHE_FILE='$ERROR_CACHE'
+        USAGE_ERROR_FILE='${ERROR_CACHE}.error'
         USAGE_CACHE_MAX_AGE=9999
+        USAGE_CACHE_STALE_AGE=9999
+        fetch_usage_limits() { return 1; }
         main
     " | strip_colors)
-assert_contains "rate_limited shows warning" "$full_output" "rate limited"
-assert_contains "rate_limited shows question marks" "$full_output" "5h: ?"
+assert_contains "error shows in full output" "$full_output" "open Chrome"
+assert_contains "error shows question marks" "$full_output" "5h: ?"
 
-rm -f "$RATELIMIT_CACHE" "${RATELIMIT_CACHE}.retry" "${RATELIMIT_CACHE}.retryafter"
+rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
 
 echo ""
 echo "[Integration]"
@@ -419,9 +400,9 @@ full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_n
     bash -c "
         source '$TEST_SCRIPT'
         USAGE_CACHE_FILE='$INT_CACHE'
-        USAGE_CACHE_RETRY_FILE='${INT_CACHE}.retry'
-        USAGE_CACHE_RETRY_AFTER_FILE='${INT_CACHE}.retryafter'
+        USAGE_ERROR_FILE='${INT_CACHE}.error'
         USAGE_CACHE_MAX_AGE=9999
+        USAGE_CACHE_STALE_AGE=9999
         main
     " | strip_colors)
 
@@ -465,6 +446,7 @@ assert_contains "test shows model" "$test_output" "Opus"
 assert_contains "test shows sonnet" "$test_output" "Sonnet:"
 assert_contains "test shows cost" "$test_output" '$0.42'
 assert_contains "test shows time" "$test_output" "Time:"
+assert_contains "test shows error state" "$test_output" "open claude.ai"
 
 rm -f "$TEST_SCRIPT"
 

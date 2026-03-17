@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="4.0.0"
+readonly VERSION="5.0.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -17,12 +17,11 @@ readonly BAR_FILLED="█"
 readonly BAR_EMPTY="░"
 
 readonly USAGE_CACHE_FILE="/tmp/claude-statusline-usage-cache"
-readonly USAGE_CACHE_RETRY_FILE="/tmp/claude-statusline-usage-retry"
-readonly USAGE_CACHE_RETRY_AFTER_FILE="/tmp/claude-statusline-retry-after"
 readonly USAGE_CACHE_LOCK_FILE="/tmp/claude-statusline-usage-lock"
+readonly USAGE_ERROR_FILE="/tmp/claude-statusline-error"
 readonly USAGE_LOG_FILE="/tmp/claude-statusline.log"
-readonly USAGE_CACHE_MAX_AGE=900
-readonly USAGE_CACHE_STALE_AGE=3600
+readonly USAGE_CACHE_MAX_AGE=300
+readonly USAGE_CACHE_STALE_AGE=600
 readonly USAGE_CACHE_LOCK_TIMEOUT=10
 readonly USAGE_CACHE_LOCK_STALE_AGE=60
 
@@ -32,6 +31,9 @@ Usage: $SCRIPT_NAME [OPTIONS]
 
 Claude Code status line with context bar, model, usage limits, cost, and session time.
 Shows context usage, current model, 5-hour and weekly limits, session cost and duration.
+Fetches usage data from claude.ai via Chrome AppleScript.
+
+Requires: Google Chrome with claude.ai tab open, "Allow JavaScript from Apple Events" enabled.
 
 Options:
     -h, --help      Show this help message
@@ -189,26 +191,13 @@ timer_icon_for_seconds() {
     fi
 }
 
-retry_after_is_active() {
-    [[ ! -f "$USAGE_CACHE_RETRY_AFTER_FILE" ]] && return 1
-    local deadline
-    deadline=$(cat "$USAGE_CACHE_RETRY_AFTER_FILE" 2>/dev/null) || return 1
-    local now
-    now=$(date +%s)
-    (( now < deadline ))
-}
-
 usage_cache_is_stale() {
-    retry_after_is_active && return 1
-
     local now
     now=$(date +%s)
     local cache_age=$(( now - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) ))
-    local retry_age=$(( now - $(stat -f %m "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || echo 0) ))
 
-    [[ ! -f "$USAGE_CACHE_FILE" ]] && [[ ! -f "$USAGE_CACHE_RETRY_FILE" ]] && return 0
+    [[ ! -f "$USAGE_CACHE_FILE" ]] && return 0
     (( cache_age <= USAGE_CACHE_MAX_AGE )) && return 1
-    (( retry_age <= USAGE_CACHE_MAX_AGE )) && return 1
     return 0
 }
 
@@ -216,77 +205,98 @@ log_event() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$USAGE_LOG_FILE" 2>/dev/null
 }
 
-credentials_are_hex_encoded() {
-    local raw=$1
-    echo "$raw" | jq -e '.' >/dev/null 2>&1 && return 1
-    return 0
+set_error() {
+    echo "$1" > "$USAGE_ERROR_FILE" 2>/dev/null || true
 }
 
-read_credentials() {
-    local raw
-    raw=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || return 1
-    if credentials_are_hex_encoded "$raw"; then
-        echo "$raw" | xxd -r -p 2>/dev/null
+clear_error() {
+    rm -f "$USAGE_ERROR_FILE" 2>/dev/null || true
+}
+
+chrome_is_running() {
+    pgrep -x "Google Chrome" >/dev/null 2>&1
+}
+
+find_claude_tab_and_execute_js() {
+    local js=$1
+    osascript -e "
+    tell application \"Google Chrome\"
+        repeat with w in windows
+            repeat with t in tabs of w
+                if URL of t contains \"claude.ai\" then
+                    return (execute t javascript \"$js\")
+                end if
+            end repeat
+        end repeat
+    end tell
+    " 2>&1
+}
+
+open_claude_tab() {
+    if chrome_is_running; then
+        osascript -e 'tell application "Google Chrome" to open location "https://claude.ai"' 2>/dev/null || true
     else
-        echo "$raw"
+        open -a "Google Chrome" "https://claude.ai" 2>/dev/null || true
     fi
 }
 
+fetch_usage_via_chrome() {
+    if ! chrome_is_running; then
+        log_event "chrome: not running"
+        set_error "open Chrome"
+        return 1
+    fi
 
-request_usage_with_token() {
-    local token=$1
-    local headers_file="/tmp/claude-statusline-headers-$$"
-    local response
+    local result
+    result=$(find_claude_tab_and_execute_js "
+        var xhr = new XMLHttpRequest();
+        xhr.open(\\\"GET\\\", \\\"/api/organizations\\\", false);
+        xhr.send();
+        if (xhr.status !== 200) throw \\\"orgs: \\\" + xhr.status;
+        var orgId = JSON.parse(xhr.responseText)[0].uuid;
+        var xhr2 = new XMLHttpRequest();
+        xhr2.open(\\\"GET\\\", \\\"/api/organizations/\\\" + orgId + \\\"/usage\\\", false);
+        xhr2.send();
+        if (xhr2.status !== 200) throw \\\"usage: \\\" + xhr2.status;
+        xhr2.responseText;
+    ")
 
-    response=$(curl -s --max-time 5 -D "$headers_file" \
-        "https://api.anthropic.com/api/oauth/usage" \
-        -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || { rm -f "$headers_file"; log_event "api: curl failed"; return 1; }
+    if echo "$result" | grep -q "Executing JavaScript through AppleScript is turned off"; then
+        log_event "chrome: JS from Apple Events disabled"
+        set_error "enable Chrome JS"
+        return 1
+    fi
 
-    if echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
-        rm -f "$headers_file" "$USAGE_CACHE_RETRY_AFTER_FILE"
-        log_event "api: success"
-        echo "$response" > "$USAGE_CACHE_FILE"
+    if [[ -z "$result" ]]; then
+        log_event "chrome: no claude.ai tab found"
+        set_error "open claude.ai"
+        open_claude_tab
+        return 1
+    fi
+
+    if echo "$result" | jq -e '.five_hour' >/dev/null 2>&1; then
+        echo "$result"
         return 0
     fi
 
-    local retry_after
-    retry_after=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | tr -d '\r' | awk '{print $2}')
-    rm -f "$headers_file"
-
-    if [[ -n "$retry_after" && "$retry_after" =~ ^[0-9]+$ ]]; then
-        local deadline=$(( $(date +%s) + retry_after ))
-        echo "$deadline" > "$USAGE_CACHE_RETRY_AFTER_FILE"
-        log_event "api: 429, retry-after=${retry_after}s (until $(date -r "$deadline" '+%H:%M:%S'))"
-    fi
-
-    local error_msg
-    error_msg=$(echo "$response" | jq -r '.error.type // .error.message // "unknown"' 2>/dev/null)
-    log_event "api: failed - $error_msg"
+    log_event "chrome: unexpected response - ${result:0:100}"
+    set_error "API error"
     return 1
 }
 
 fetch_usage_limits() {
-    local credentials
-    local token
+    local response
+    response=$(fetch_usage_via_chrome) || return 1
 
-    credentials=$(read_credentials) || { log_event "fetch: no credentials"; return 1; }
-    token=$(echo "$credentials" | jq -r '.claudeAiOauth.accessToken // empty') || return 1
-    [[ -z "$token" ]] && { log_event "fetch: empty token"; return 1; }
-
-    request_usage_with_token "$token" && return 0
-    return 1
-}
-
-usage_cache_is_valid() {
-    [[ -f "$USAGE_CACHE_FILE" ]] && \
-    (( $(date +%s) - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) < USAGE_CACHE_STALE_AGE )) && \
-    jq -e '.five_hour' "$USAGE_CACHE_FILE" >/dev/null 2>&1
+    log_event "chrome: success"
+    clear_error
+    echo "$response" > "$USAGE_CACHE_FILE"
+    return 0
 }
 
 fetch_usage_limits_if_still_stale() {
     usage_cache_is_stale || return 0
-    fetch_usage_limits || touch "$USAGE_CACHE_RETRY_FILE" 2>/dev/null || true
+    fetch_usage_limits || true
 }
 
 cleanup_stale_lock() {
@@ -310,6 +320,7 @@ with_fetch_lock() {
 
 read_usage_from_cache() {
     [[ -f "$USAGE_CACHE_FILE" ]] || return 1
+    (( $(date +%s) - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) > USAGE_CACHE_STALE_AGE )) && return 1
     jq -e '.five_hour' "$USAGE_CACHE_FILE" >/dev/null 2>&1 || return 1
 
     local five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset
@@ -330,11 +341,11 @@ get_usage_limits() {
     local result
     result=$(read_usage_from_cache) && { echo "$result"; return; }
 
-    if retry_after_is_active; then
-        echo "rate_limited|||||"
-    else
-        echo "|||||"
+    local error_msg=""
+    if [[ -f "$USAGE_ERROR_FILE" ]]; then
+        error_msg=$(cat "$USAGE_ERROR_FILE" 2>/dev/null)
     fi
+    echo "error:${error_msg}|||||"
 }
 
 format_usage_part() {
@@ -376,7 +387,7 @@ format_output() {
     local sonnet_reset=$8
     local cost=$9
     local duration_ms=${10}
-    local rate_limited=${11:-}
+    local error_msg=${11:-}
 
     local used_color
     local used_bar
@@ -396,17 +407,8 @@ format_output() {
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
 
     local status_part=""
-    if [[ "$rate_limited" == "true" ]]; then
-        local retry_remaining=""
-        if [[ -f "$USAGE_CACHE_RETRY_AFTER_FILE" ]]; then
-            local deadline now
-            deadline=$(cat "$USAGE_CACHE_RETRY_AFTER_FILE" 2>/dev/null) || deadline=0
-            now=$(date +%s)
-            if (( deadline > now )); then
-                retry_remaining=" $(format_time_remaining $(( deadline - now )))"
-            fi
-        fi
-        status_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_YELLOW}⏳ rate limited${retry_remaining}${COLOR_RESET}"
+    if [[ -n "$error_msg" ]]; then
+        status_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_YELLOW}⚠ ${error_msg}${COLOR_RESET}"
     fi
 
     echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${status_part}"
@@ -434,6 +436,9 @@ run_test() {
     echo ""
     echo "No limits data:"
     format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000"
+    echo ""
+    echo "Error state:"
+    format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000" "open claude.ai"
 }
 
 main() {
@@ -458,9 +463,10 @@ main() {
     duration_ms=$(parse_duration "$input")
 
     usage_data=$(get_usage_limits)
-    local rate_limited="false"
-    if [[ "${usage_data%%|*}" == "rate_limited" ]]; then
-        rate_limited="true"
+    local error_msg=""
+    if [[ "${usage_data%%|*}" == error:* ]]; then
+        error_msg="${usage_data%%|*}"
+        error_msg="${error_msg#error:}"
         usage_data="|||||"
     fi
     five_hour="${usage_data%%|*}"
@@ -474,7 +480,7 @@ main() {
     seven_day_reset="${rest%%|*}"
     sonnet_reset="${rest#*|}"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$rate_limited"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg"
 }
 
 case "${1:-}" in
