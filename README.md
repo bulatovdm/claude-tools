@@ -24,6 +24,10 @@ Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) →
 
 All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
 
+### Multi-Session Support
+
+When running multiple Claude Code sessions simultaneously, each session independently tracks its own model and context window size. Model and context window are frozen at session start via a `SessionStart` hook — changes to the global model setting in other sessions don't affect the status line of existing sessions.
+
 ### How It Works
 
 Usage limits are fetched from **claude.ai via Chrome AppleScript** — the script executes an XHR request directly in an open claude.ai browser tab, bypassing Cloudflare and OAuth token issues. Data is cached for 5 minutes.

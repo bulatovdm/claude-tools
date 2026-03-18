@@ -94,8 +94,85 @@ build_progress_bar() {
     echo -e "${color}${bar}${COLOR_RESET}"
 }
 
+readonly MODEL_WINDOW_MAP="
+claude-opus-4-5:200000
+claude-sonnet-4-5:200000
+claude-haiku-4-5:200000
+"
+
+resolve_window_size_from_model_id() {
+    local model_id=$1
+
+    # Priority 1: custom map
+    local entry
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        local key="${entry%%:*}"
+        local val="${entry##*:}"
+        if [[ "$model_id" == "$key" ]]; then
+            echo "$val"
+            return
+        fi
+    done <<< "$MODEL_WINDOW_MAP"
+
+    # Priority 2: suffix in brackets — [1m], [200k], [128k], etc.
+    local suffix
+    suffix=$(echo "$model_id" | grep -oE '\[([0-9]+)(m|k)\]' | tr -d '[]')
+    if [[ -n "$suffix" ]]; then
+        local num unit
+        num=$(echo "$suffix" | grep -oE '^[0-9]+')
+        unit=$(echo "$suffix" | grep -oE '[mk]$')
+        if [[ "$unit" == "m" ]]; then
+            echo $(( num * 1000000 ))
+            return
+        elif [[ "$unit" == "k" ]]; then
+            echo $(( num * 1000 ))
+            return
+        fi
+    fi
+
+    # Fallback
+    echo "200000"
+}
+
 parse_used_percentage() {
     local input=$1
+    local session_id
+    session_id=$(echo "$input" | jq -r '.session_id // empty')
+
+    if [[ -n "$session_id" ]]; then
+        local model_id_file="/tmp/claude-model-id-${session_id}"
+        local ctx_file="/tmp/claude-ctx-${session_id}"
+
+        if [[ ! -f "$ctx_file" ]]; then
+            local window_size
+            if [[ -f "$model_id_file" ]]; then
+                window_size=$(resolve_window_size_from_model_id "$(cat "$model_id_file")")
+            else
+                # Fallback: derive from stdin model.id on first call
+                local model_id
+                model_id=$(echo "$input" | jq -r '.model.id // empty')
+                window_size=$(resolve_window_size_from_model_id "$model_id")
+                [[ -n "$model_id" ]] && echo "$model_id" > "$model_id_file"
+            fi
+            echo "$window_size" > "$ctx_file"
+        fi
+
+        local frozen_size
+        frozen_size=$(cat "$ctx_file")
+        if [[ "$frozen_size" -gt 0 ]]; then
+            local used_tokens
+            used_tokens=$(echo "$input" | jq -r '
+                (.context_window.current_usage.input_tokens // 0) +
+                (.context_window.current_usage.output_tokens // 0) +
+                (.context_window.current_usage.cache_creation_input_tokens // 0) +
+                (.context_window.current_usage.cache_read_input_tokens // 0)
+            ')
+            echo $(( used_tokens * 100 / frozen_size ))
+            return
+        fi
+    fi
+
     echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d'.' -f1
 }
 

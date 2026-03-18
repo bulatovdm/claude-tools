@@ -166,8 +166,7 @@ configure_hooks_settings() {
 
     backup_file "$settings_file"
     jq --arg cmd "$hook_command" '
-        .hooks.SessionStart += [{"matcher": "", "hooks": [{"type": "command", "command": $cmd, "async": true}]}] |
-        .hooks.ConfigChange += [{"matcher": "user_settings", "hooks": [{"type": "command", "command": $cmd, "async": true}]}]
+        .hooks.SessionStart += [{"matcher": "", "hooks": [{"type": "command", "command": $cmd, "async": true}]}]
     ' "$settings_file" > "${settings_file}.tmp"
     mv "${settings_file}.tmp" "$settings_file"
     log_success "Configured hooks in settings.json"
