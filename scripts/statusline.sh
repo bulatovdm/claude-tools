@@ -95,9 +95,11 @@ build_progress_bar() {
 }
 
 readonly MODEL_WINDOW_MAP="
+claude-opus-4-6:1000000
+claude-sonnet-4-6:200000
+claude-haiku-4-5:200000
 claude-opus-4-5:200000
 claude-sonnet-4-5:200000
-claude-haiku-4-5:200000
 "
 
 resolve_window_size_from_model_id() {
