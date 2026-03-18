@@ -149,7 +149,6 @@ parse_used_percentage() {
             if [[ -f "$model_id_file" ]]; then
                 window_size=$(resolve_window_size_from_model_id "$(cat "$model_id_file")")
             else
-                # Fallback: derive from stdin model.id on first call
                 local model_id
                 model_id=$(echo "$input" | jq -r '.model.id // empty')
                 window_size=$(resolve_window_size_from_model_id "$model_id")
@@ -158,8 +157,15 @@ parse_used_percentage() {
             echo "$window_size" > "$ctx_file"
         fi
 
+        # Auto-upgrade: if stdin reports a larger window, session switched to a bigger model
+        local stdin_window_size
+        stdin_window_size=$(echo "$input" | jq -r '.context_window.context_window_size // 0')
         local frozen_size
         frozen_size=$(cat "$ctx_file")
+        if [[ "$stdin_window_size" -gt "$frozen_size" ]]; then
+            frozen_size=$stdin_window_size
+            echo "$frozen_size" > "$ctx_file"
+        fi
         if [[ "$frozen_size" -gt 0 ]]; then
             local used_tokens
             used_tokens=$(echo "$input" | jq -r '
