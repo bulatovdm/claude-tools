@@ -7,6 +7,8 @@ readonly VERSION="1.0.0"
 readonly CLAUDE_DIR="$HOME/.claude"
 readonly SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)/scripts"
 readonly HOOKS_DIR="$SCRIPTS_DIR/hooks"
+readonly GIT_HOOKS_DIR="$SCRIPTS_DIR/git-hooks"
+readonly GIT_HOOKS_TARGET="$HOME/.git-hooks"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -124,6 +126,45 @@ install_statusline() {
     cp "$SCRIPTS_DIR/usage_chrome.sh" "$CLAUDE_DIR/usage_chrome.sh"
     cp "$SCRIPTS_DIR/usage_native.sh" "$CLAUDE_DIR/usage_native.sh"
     log_success "Installed: $target (with usage modules)"
+}
+
+install_git_hooks() {
+    local force=${1:-false}
+
+    mkdir -p "$GIT_HOOKS_TARGET"
+
+    for hook_file in "$GIT_HOOKS_DIR"/*; do
+        [[ -f "$hook_file" ]] || continue
+        local hook_name
+        hook_name=$(basename "$hook_file")
+        local target="$GIT_HOOKS_TARGET/$hook_name"
+
+        if [ -f "$target" ] && [ "$force" != "true" ]; then
+            log_warning "git-hooks/$hook_name already exists. Use --force to overwrite"
+            continue
+        fi
+
+        if [ -f "$target" ]; then
+            backup_file "$target"
+        fi
+
+        cp "$hook_file" "$target"
+        chmod +x "$target"
+        log_success "Installed: $target"
+    done
+
+    local current_hooks_path
+    current_hooks_path=$(git config --global core.hooksPath 2>/dev/null || true)
+
+    if [[ "$current_hooks_path" != "$GIT_HOOKS_TARGET" ]]; then
+        if [[ -n "$current_hooks_path" ]]; then
+            log_warning "Changing global core.hooksPath: $current_hooks_path → $GIT_HOOKS_TARGET"
+        fi
+        git config --global core.hooksPath "$GIT_HOOKS_TARGET"
+        log_success "Set global core.hooksPath = $GIT_HOOKS_TARGET"
+    else
+        log_success "Global core.hooksPath already set to $GIT_HOOKS_TARGET"
+    fi
 }
 
 install_hooks() {
@@ -258,6 +299,7 @@ do_install() {
 
     install_statusline "$force"
     install_hooks "$force"
+    install_git_hooks "$force"
     configure_settings
     configure_hooks_settings
     setup_chrome
@@ -297,6 +339,22 @@ do_uninstall() {
         log_warning "Not found: $hook"
     fi
 
+    for hook_file in "$GIT_HOOKS_TARGET"/*; do
+        [[ -f "$hook_file" ]] || continue
+        rm "$hook_file"
+        log_success "Removed: $hook_file"
+    done
+    if [ -d "$GIT_HOOKS_TARGET" ] && [ -z "$(ls -A "$GIT_HOOKS_TARGET" 2>/dev/null)" ]; then
+        rmdir "$GIT_HOOKS_TARGET"
+        log_success "Removed: $GIT_HOOKS_TARGET"
+    fi
+    local current_hooks_path
+    current_hooks_path=$(git config --global core.hooksPath 2>/dev/null || true)
+    if [[ "$current_hooks_path" == "$GIT_HOOKS_TARGET" ]]; then
+        git config --global --unset core.hooksPath
+        log_success "Unset global core.hooksPath"
+    fi
+
     if [ -f "$settings" ] && jq -e '.statusLine' "$settings" > /dev/null 2>&1; then
         backup_file "$settings"
         jq 'del(.statusLine) | del(.hooks.SessionStart[] | select(.hooks[]?.command == "~/.claude/hooks/save-model.sh")) | del(.hooks.ConfigChange[] | select(.hooks[]?.command == "~/.claude/hooks/save-model.sh"))' "$settings" > "${settings}.tmp" 2>/dev/null || jq 'del(.statusLine)' "$settings" > "${settings}.tmp"
@@ -326,6 +384,18 @@ do_status() {
         log_success "hooks/save-model.sh: installed"
     else
         log_warning "hooks/save-model.sh: not installed"
+    fi
+
+    local git_hooks_path
+    git_hooks_path=$(git config --global core.hooksPath 2>/dev/null || true)
+    if [[ "$git_hooks_path" == "$GIT_HOOKS_TARGET" ]]; then
+        log_success "git-hooks: core.hooksPath = $GIT_HOOKS_TARGET"
+        for hook_file in "$GIT_HOOKS_TARGET"/*; do
+            [[ -f "$hook_file" ]] || continue
+            log_success "  $(basename "$hook_file"): installed"
+        done
+    else
+        log_warning "git-hooks: not configured (core.hooksPath = ${git_hooks_path:-<unset>})"
     fi
 
     if [ -f "$settings" ] && jq -e '.statusLine' "$settings" > /dev/null 2>&1; then

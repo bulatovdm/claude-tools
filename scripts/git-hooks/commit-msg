@@ -1,0 +1,22 @@
+#!/bin/bash
+
+set -euo pipefail
+
+COMMIT_MSG_FILE="$1"
+
+# --- Clean Claude Code signatures ---
+
+sed -i '' '/Co-Authored-By:.*<noreply@anthropic.com>/d' "$COMMIT_MSG_FILE"
+sed -i '' '/🤖 Generated with \[Claude Code\]/d' "$COMMIT_MSG_FILE"
+perl -i -p0e 's/\n+$/\n/' "$COMMIT_MSG_FILE" 2>/dev/null
+
+# --- Run local project commit-msg hook if exists ---
+# When global core.hooksPath is set, git ignores .git/hooks/.
+# Check for a local hook in the project's .git/hooks/ and run it.
+
+git_dir=$(git rev-parse --git-dir 2>/dev/null || true)
+local_hook="${git_dir:+$git_dir/hooks/commit-msg}"
+
+if [[ -n "$local_hook" && -x "$local_hook" ]]; then
+    exec "$local_hook" "$@"
+fi

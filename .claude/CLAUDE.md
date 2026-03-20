@@ -4,6 +4,7 @@
 
 ```
 scripts/statusline.sh    - Скрипт статус-линии для Claude Code
+scripts/git-hooks/       - Глобальные git-хуки (чистка подписей Claude)
 tests/statusline_test.sh - Тесты статус-линии
 install.sh               - Скрипт установки
 ```

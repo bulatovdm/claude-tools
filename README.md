@@ -43,6 +43,18 @@ If no claude.ai tab is found, one is automatically opened. Error states are show
 | `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled |
 | `⚠ API error` | claude.ai API returned an error |
 
+### Git Hooks
+
+Global git hooks that clean up auto-generated Claude Code signatures from commit messages:
+
+- Removes `Co-Authored-By: ... <noreply@anthropic.com>`
+- Removes `🤖 Generated with [Claude Code]`
+- Strips trailing blank lines
+
+If the project has its own `commit-msg` hook in `.git/hooks/`, it will be called after cleanup — so local project hooks (conventional commits validation, etc.) still work.
+
+> **Note:** Projects that override `core.hooksPath` locally (e.g. `core.hooksPath = .githooks`) bypass global hooks entirely. For those projects, add Claude signature cleanup to the project's own `commit-msg` hook.
+
 ## Requirements
 
 - [Claude Code](https://claude.ai/claude-code) CLI
@@ -66,9 +78,10 @@ cd claude-tools
 
 The installer will:
 1. Install the status line script to `~/.claude/`
-2. Configure `settings.json`
-3. Open Chrome with claude.ai if needed
-4. Check that "Allow JavaScript from Apple Events" is enabled
+2. Install git hooks to `~/.git-hooks/` and set global `core.hooksPath`
+3. Configure `settings.json`
+4. Open Chrome with claude.ai if needed
+5. Check that "Allow JavaScript from Apple Events" is enabled
 
 ### Manual Install
 
