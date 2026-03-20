@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STATUSLINE="$SCRIPT_DIR/scripts/statusline.sh"
+CHROME_MODULE="$SCRIPT_DIR/scripts/usage_chrome.sh"
+NATIVE_MODULE="$SCRIPT_DIR/scripts/usage_native.sh"
 
 PASS=0
 FAIL=0
@@ -13,7 +15,12 @@ strip_colors() {
 }
 
 TEST_SCRIPT=$(mktemp)
+TEST_CHROME=$(mktemp)
+TEST_NATIVE=$(mktemp)
+
 sed 's/^readonly //' "$STATUSLINE" | sed '/^case/,/^esac/d' > "$TEST_SCRIPT"
+cp "$CHROME_MODULE" "$TEST_CHROME"
+cp "$NATIVE_MODULE" "$TEST_NATIVE"
 
 assert_contains() {
     local test_name=$1
@@ -51,10 +58,18 @@ run_func() {
     bash -c "source '$TEST_SCRIPT'; $*"
 }
 
-run_func_with_cache() {
+run_chrome_func() {
+    bash -c "source '$TEST_CHROME'; $*"
+}
+
+run_chrome_func_with_cache() {
     local cache_file=$1
     shift
-    bash -c "source '$TEST_SCRIPT'; USAGE_CACHE_FILE='$cache_file'; USAGE_ERROR_FILE='${cache_file}.error'; $*"
+    bash -c "source '$TEST_CHROME'; USAGE_CACHE_FILE='$cache_file'; USAGE_ERROR_FILE='${cache_file}.error'; $*"
+}
+
+run_native_func() {
+    bash -c "source '$TEST_NATIVE'; $*"
 }
 
 NOW_EPOCH=$(date -u +%s)
@@ -64,12 +79,15 @@ RESET_30M=$(TZ=UTC date -r $((NOW_EPOCH + 1800)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/nul
 RESET_PAST=$(TZ=UTC date -r $((NOW_EPOCH - 60)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
 RESET_4H=$(TZ=UTC date -r $((NOW_EPOCH + 14400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null)
 
+RESET_2H_UNIX=$((NOW_EPOCH + 7200))
+RESET_6D_UNIX=$((NOW_EPOCH + 518400))
+
 echo "=== statusline.sh tests ==="
 echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "5.0.0"
+assert_contains "shows version" "$result" "6.0.0"
 
 echo ""
 echo "[Help]"
@@ -80,6 +98,7 @@ assert_contains "help mentions usage limits" "$result" "limits"
 assert_contains "help mentions cost" "$result" "cost"
 assert_contains "help mentions duration" "$result" "duration"
 assert_contains "help mentions Chrome" "$result" "Chrome"
+assert_contains "help mentions native rate_limits" "$result" "native"
 
 echo ""
 echo "[parse_used_percentage]"
@@ -300,20 +319,23 @@ result=$(run_func "format_usage_part '5h' '20' '' 18000" | strip_colors)
 assert_contains "no reset without timestamp" "$result" "5h: 20%"
 
 echo ""
+echo "=== Chrome module (legacy) ==="
+echo ""
+
 echo "[usage_cache_is_stale]"
 
 STALE_CACHE="/tmp/claude-statusline-test-stale-$$"
 rm -f "$STALE_CACHE"
 
-result=$(run_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
+result=$(run_chrome_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
 assert_equals "missing cache is stale" "$result" "stale"
 
 echo '{"five_hour":{"utilization":5.0},"seven_day":{"utilization":20.0}}' > "$STALE_CACHE"
-result=$(run_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
+result=$(run_chrome_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
 assert_equals "recent cache is fresh" "$result" "fresh"
 
 touch -t 202001010000 "$STALE_CACHE"
-result=$(run_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
+result=$(run_chrome_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
 assert_equals "old cache is stale" "$result" "stale"
 
 rm -f "$STALE_CACHE"
@@ -329,7 +351,7 @@ echo 0 > "$CALL_COUNT_FILE"
 
 # fetch_usage_limits_if_still_stale should not fetch if cache was populated while waiting for lock
 result=$(bash -c "
-    source '$TEST_SCRIPT'
+    source '$TEST_CHROME'
     USAGE_CACHE_FILE='$LOCK_CACHE'
     USAGE_ERROR_FILE='${LOCK_CACHE}.error'
     USAGE_CACHE_LOCK_FILE='$LOCK_FILE'
@@ -347,12 +369,12 @@ assert_equals "skips fetch when cache is fresh" "$result" "0"
 rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE" "${LOCK_CACHE}.error"
 
 echo ""
-echo "[get_usage_limits from cache]"
+echo "[get_usage_limits_chrome from cache]"
 
 READ_CACHE="/tmp/claude-statusline-test-read-$$"
 echo "{\"five_hour\":{\"utilization\":25.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":50.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":10.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$READ_CACHE"
 
-result=$(run_func_with_cache "$READ_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits")
+result=$(run_chrome_func_with_cache "$READ_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome")
 assert_contains "reads utilization from cache" "$result" "25|50|10|"
 assert_contains "reads reset times from cache" "$result" "$RESET_2H"
 
@@ -361,37 +383,71 @@ rm -f "$READ_CACHE"
 EMPTY_CACHE="/tmp/claude-statusline-test-empty-$$"
 rm -f "$EMPTY_CACHE"
 result=$(bash -c "
-    source '$TEST_SCRIPT'
+    source '$TEST_CHROME'
     USAGE_CACHE_FILE='$EMPTY_CACHE'
     USAGE_ERROR_FILE='${EMPTY_CACHE}.error'
     fetch_usage_limits() { return 1; }
-    get_usage_limits
+    get_usage_limits_chrome
 ")
 assert_contains "no cache returns error prefix" "$result" "error:"
 
 ERROR_CACHE="/tmp/claude-statusline-test-error-$$"
 rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
 echo "open Chrome" > "${ERROR_CACHE}.error"
-result=$(run_func_with_cache "$ERROR_CACHE" "USAGE_CACHE_MAX_AGE=9999; fetch_usage_limits() { return 1; }; get_usage_limits")
+result=$(run_chrome_func_with_cache "$ERROR_CACHE" "USAGE_CACHE_MAX_AGE=9999; fetch_usage_limits() { return 1; }; get_usage_limits_chrome")
 assert_contains "error file content passed through" "$result" "error:open Chrome"
-
-full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
-    bash -c "
-        source '$TEST_SCRIPT'
-        USAGE_CACHE_FILE='$ERROR_CACHE'
-        USAGE_ERROR_FILE='${ERROR_CACHE}.error'
-        USAGE_CACHE_MAX_AGE=9999
-        USAGE_CACHE_STALE_AGE=9999
-        fetch_usage_limits() { return 1; }
-        main
-    " | strip_colors)
-assert_contains "error shows in full output" "$full_output" "open Chrome"
-assert_contains "error shows question marks" "$full_output" "5h: ?"
 
 rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
 
 echo ""
-echo "[Integration]"
+echo "=== Native module ==="
+echo ""
+
+echo "[unix_to_iso]"
+
+result=$(run_native_func "unix_to_iso $RESET_2H_UNIX")
+assert_equals "converts unix to ISO" "$result" "$RESET_2H"
+
+result=$(run_native_func "unix_to_iso '' 2>/dev/null || echo 'error'")
+assert_equals "empty returns error" "$result" "error"
+
+result=$(run_native_func "unix_to_iso 'null' 2>/dev/null || echo 'error'")
+assert_equals "null returns error" "$result" "error"
+
+result=$(run_native_func "unix_to_iso '0' 2>/dev/null || echo 'error'")
+assert_equals "zero returns error" "$result" "error"
+
+echo ""
+echo "[get_usage_limits_native]"
+
+native_input="{\"rate_limits\":{\"five_hour\":{\"used_percentage\":25,\"resets_at\":${RESET_2H_UNIX}},\"seven_day\":{\"used_percentage\":50,\"resets_at\":${RESET_6D_UNIX}}}}"
+result=$(run_native_func "get_usage_limits_native '$native_input'")
+assert_contains "native parses five_hour" "$result" "25|"
+assert_contains "native parses seven_day" "$result" "|50|"
+assert_contains "native has empty sonnet" "$result" "|50||"
+assert_contains "native converts five_hour reset" "$result" "$RESET_2H"
+assert_contains "native converts seven_day reset" "$result" "$RESET_6D"
+
+# Decimal percentages are truncated
+native_decimal="{\"rate_limits\":{\"five_hour\":{\"used_percentage\":33.7,\"resets_at\":${RESET_2H_UNIX}},\"seven_day\":{\"used_percentage\":66.2,\"resets_at\":${RESET_6D_UNIX}}}}"
+result=$(run_native_func "get_usage_limits_native '$native_decimal'")
+assert_contains "native truncates five_hour decimal" "$result" "33|"
+assert_contains "native truncates seven_day decimal" "$result" "|66|"
+
+# Missing rate_limits
+result=$(run_native_func "get_usage_limits_native '{\"model\":{\"display_name\":\"Opus\"}}'")
+assert_equals "native handles missing rate_limits" "$result" "|||||"
+
+# Partial data (only five_hour)
+partial_input="{\"rate_limits\":{\"five_hour\":{\"used_percentage\":40,\"resets_at\":${RESET_2H_UNIX}}}}"
+result=$(run_native_func "get_usage_limits_native '$partial_input'")
+assert_contains "native handles partial data" "$result" "40|"
+
+echo ""
+echo "=== Integration ==="
+echo ""
+
+echo "[Integration — Chrome]"
 
 INT_CACHE="/tmp/claude-statusline-test-int-$$"
 echo "{\"five_hour\":{\"utilization\":12.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":45.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":8.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$INT_CACHE"
@@ -399,10 +455,12 @@ echo "{\"five_hour\":{\"utilization\":12.0,\"resets_at\":\"${RESET_2H}.000000+00
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "
         source '$TEST_SCRIPT'
+        source '$TEST_CHROME'
         USAGE_CACHE_FILE='$INT_CACHE'
         USAGE_ERROR_FILE='${INT_CACHE}.error'
         USAGE_CACHE_MAX_AGE=9999
         USAGE_CACHE_STALE_AGE=9999
+        get_usage_limits() { get_usage_limits_chrome; }
         main
     " | strip_colors)
 
@@ -416,6 +474,30 @@ assert_contains "has cost" "$full_output" '$2.50'
 assert_contains "has time" "$full_output" "15m"
 
 rm -f "$INT_CACHE"
+
+echo ""
+echo "[Integration — Chrome error state]"
+
+ERROR_CACHE="/tmp/claude-statusline-test-error-int-$$"
+rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
+echo "open Chrome" > "${ERROR_CACHE}.error"
+
+full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
+    bash -c "
+        source '$TEST_SCRIPT'
+        source '$TEST_CHROME'
+        USAGE_CACHE_FILE='$ERROR_CACHE'
+        USAGE_ERROR_FILE='${ERROR_CACHE}.error'
+        USAGE_CACHE_MAX_AGE=9999
+        USAGE_CACHE_STALE_AGE=9999
+        fetch_usage_limits() { return 1; }
+        get_usage_limits() { get_usage_limits_chrome; }
+        main
+    " | strip_colors)
+assert_contains "error shows in full output" "$full_output" "open Chrome"
+assert_contains "error shows question marks" "$full_output" "5h: ?"
+
+rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
 
 echo ""
 echo "[Color coding]"
@@ -448,7 +530,7 @@ assert_contains "test shows cost" "$test_output" '$0.42'
 assert_contains "test shows time" "$test_output" "Time:"
 assert_contains "test shows error state" "$test_output" "open claude.ai"
 
-rm -f "$TEST_SCRIPT"
+rm -f "$TEST_SCRIPT" "$TEST_CHROME" "$TEST_NATIVE"
 
 echo ""
 echo "========================"

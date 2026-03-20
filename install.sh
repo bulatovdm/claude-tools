@@ -120,7 +120,10 @@ install_statusline() {
 
     cp "$source" "$target"
     chmod +x "$target"
-    log_success "Installed: $target"
+
+    cp "$SCRIPTS_DIR/usage_chrome.sh" "$CLAUDE_DIR/usage_chrome.sh"
+    cp "$SCRIPTS_DIR/usage_native.sh" "$CLAUDE_DIR/usage_native.sh"
+    log_success "Installed: $target (with usage modules)"
 }
 
 install_hooks() {
@@ -277,6 +280,14 @@ do_uninstall() {
     else
         log_warning "Not found: $statusline"
     fi
+
+    for module in usage_chrome.sh usage_native.sh; do
+        local module_file="$CLAUDE_DIR/$module"
+        if [ -f "$module_file" ]; then
+            rm "$module_file"
+            log_success "Removed: $module_file"
+        fi
+    done
 
     local hook="$CLAUDE_DIR/hooks/save-model.sh"
     if [ -f "$hook" ]; then
