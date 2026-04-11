@@ -43,6 +43,22 @@ If no claude.ai tab is found, one is automatically opened. Error states are show
 | `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled |
 | `⚠ API error` | claude.ai API returned an error |
 
+### Session Picker
+
+Interactive session picker for Claude Code — workaround for limited `/resume` functionality:
+
+```bash
+cs                    # sessions for current directory
+cs --all              # all sessions across projects
+cs --all -n 50        # show up to 50 sessions
+cs --list             # non-interactive list (no picker)
+cs -p /path/to/repo   # sessions for a specific project
+```
+
+Reads `~/.claude/history.jsonl`, groups prompts by session, shows date/duration/message count/preview. Select a session by number → launches `claude --resume <session-id>`.
+
+If `fzf` is installed, uses fuzzy finder for selection. Otherwise falls back to a numbered list.
+
 ### Git Hooks
 
 Global git hooks that clean up auto-generated Claude Code signatures from commit messages:
@@ -121,6 +137,7 @@ Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Even
 bash tests/statusline_test.sh    # Run tests
 ~/.claude/statusline.sh --test   # Visual preview
 ~/.claude/statusline.sh --help   # Show help
+~/.claude/session.sh --help      # Session picker help
 ```
 
 ## Uninstallation

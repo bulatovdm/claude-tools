@@ -128,6 +128,59 @@ install_statusline() {
     log_success "Installed: $target (with usage modules)"
 }
 
+install_session() {
+    local force=${1:-false}
+    local target="$CLAUDE_DIR/session.sh"
+    local source="$SCRIPTS_DIR/session.sh"
+
+    if [ -f "$target" ] && [ "$force" != "true" ]; then
+        log_warning "session.sh already exists. Use --force to overwrite"
+        return 0
+    fi
+
+    if [ -f "$target" ]; then
+        backup_file "$target"
+    fi
+
+    cp "$source" "$target"
+    chmod +x "$target"
+    log_success "Installed: $target"
+}
+
+install_alias() {
+    local shell_rc=""
+    local current_shell
+    current_shell=$(basename "${SHELL:-/bin/zsh}")
+
+    case "$current_shell" in
+        zsh)  shell_rc="$HOME/.zshrc" ;;
+        bash) shell_rc="$HOME/.bashrc" ;;
+        *)    shell_rc="$HOME/.${current_shell}rc" ;;
+    esac
+
+    if [[ ! -f "$shell_rc" ]]; then
+        log_warning "Shell config not found: $shell_rc"
+        return 0
+    fi
+
+    local alias_line="alias cs='~/.claude/session.sh'"
+
+    if grep -qF "$alias_line" "$shell_rc" 2>/dev/null; then
+        log_success "Alias 'cs' already configured in $shell_rc"
+        return 0
+    fi
+
+    if grep -q "alias cs=" "$shell_rc" 2>/dev/null; then
+        log_warning "Alias 'cs' already exists in $shell_rc with different value — skipping"
+        return 0
+    fi
+
+    echo "" >> "$shell_rc"
+    echo "# Claude Code session picker" >> "$shell_rc"
+    echo "$alias_line" >> "$shell_rc"
+    log_success "Added alias 'cs' to $shell_rc (restart shell or: source $shell_rc)"
+}
+
 install_git_hooks() {
     local force=${1:-false}
 
@@ -298,6 +351,8 @@ do_install() {
     ensure_claude_dir
 
     install_statusline "$force"
+    install_session "$force"
+    install_alias
     install_hooks "$force"
     install_git_hooks "$force"
     configure_settings
@@ -321,6 +376,12 @@ do_uninstall() {
         log_success "Removed: $statusline"
     else
         log_warning "Not found: $statusline"
+    fi
+
+    local session_script="$CLAUDE_DIR/session.sh"
+    if [ -f "$session_script" ]; then
+        rm "$session_script"
+        log_success "Removed: $session_script"
     fi
 
     for module in usage_chrome.sh usage_native.sh; do
@@ -377,6 +438,19 @@ do_status() {
         log_success "statusline.sh: installed"
     else
         log_warning "statusline.sh: not installed"
+    fi
+
+    local session_script="$CLAUDE_DIR/session.sh"
+    if [ -f "$session_script" ]; then
+        log_success "session.sh: installed"
+    else
+        log_warning "session.sh: not installed"
+    fi
+
+    if alias cs &>/dev/null 2>&1 || grep -qF "alias cs=" "$HOME/.zshrc" 2>/dev/null; then
+        log_success "alias 'cs': configured"
+    else
+        log_warning "alias 'cs': not configured"
     fi
 
     local hook="$CLAUDE_DIR/hooks/save-model.sh"
