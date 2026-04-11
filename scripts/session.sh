@@ -59,11 +59,6 @@ check_requirements() {
     fi
 }
 
-path_to_project_dir() {
-    local path="$1"
-    echo "${path//\//-}"
-}
-
 build_session_list() {
     local filter_project="${1:-}"
     local limit="${2:-30}"
@@ -147,6 +142,23 @@ extract_project_name() {
     basename "$full_path" 2>/dev/null || echo "$full_path"
 }
 
+load_session_titles() {
+    local session_ids_str="$1"
+
+    local IFS=','
+    for sid in $session_ids_str; do
+        local session_file
+        session_file=$(find "$PROJECTS_DIR" -name "${sid}.jsonl" -print -quit 2>/dev/null)
+        if [[ -n "$session_file" ]]; then
+            local title
+            title=$(grep -o '"customTitle":"[^"]*"' "$session_file" 2>/dev/null | head -1 | sed 's/"customTitle":"//;s/"$//')
+            if [[ -n "$title" ]]; then
+                printf '%s\t%s\n' "$sid" "$title"
+            fi
+        fi
+    done
+}
+
 display_sessions() {
     local filter_project="$1"
     local limit="$2"
@@ -164,35 +176,111 @@ display_sessions() {
         exit 0
     fi
 
+    local all_sids=""
+    while IFS=$'\t' read -r _lt _ft sid _rest; do
+        if [[ -n "$all_sids" ]]; then
+            all_sids="${all_sids},${sid}"
+        else
+            all_sids="$sid"
+        fi
+    done <<< "$data"
+
+    local titles_data
+    titles_data=$(load_session_titles "$all_sids")
+
+    local raw_dates=()
+    local raw_durations=()
+    local raw_msg_counts=()
+    local raw_projects=()
+    local raw_titles=()
+    local raw_previews=()
     SESSION_IDS=()
     DISPLAY_LINES=()
-    local idx=0
+
+    local max_title_len=0
+    local max_proj_len=0
 
     while IFS=$'\t' read -r last_ts first_ts sid msg_count project preview; do
-        idx=$((idx + 1))
         SESSION_IDS+=("$sid")
+        raw_dates+=("$(format_timestamp "$last_ts")")
+        raw_durations+=("$(format_duration "$first_ts" "$last_ts")")
+        raw_msg_counts+=("$msg_count")
+        raw_projects+=("$(extract_project_name "$project")")
 
-        local date_str
-        date_str=$(format_timestamp "$last_ts")
-        local duration
-        duration=$(format_duration "$first_ts" "$last_ts")
-
-        local proj_name
-        proj_name=$(extract_project_name "$project")
+        local title=""
+        if [[ -n "$titles_data" ]]; then
+            title=$(echo "$titles_data" | awk -F'\t' -v s="$sid" '$1 == s { print $2; exit }')
+        fi
+        raw_titles+=("$title")
 
         preview="${preview//[$'\r\n']/ }"
-        if [[ ${#preview} -gt 60 ]]; then
-            preview="${preview:0:60}…"
+        preview="${preview#"${preview%%[![:space:]]*}"}"
+        raw_previews+=("$preview")
+
+        if [[ ${#title} -gt $max_title_len ]]; then
+            max_title_len=${#title}
+        fi
+        local pn
+        pn=$(extract_project_name "$project")
+        if [[ ${#pn} -gt $max_proj_len ]]; then
+            max_proj_len=${#pn}
+        fi
+    done <<< "$data"
+
+    if [[ $max_title_len -gt 35 ]]; then
+        max_title_len=35
+    fi
+    if [[ $max_proj_len -gt 25 ]]; then
+        max_proj_len=25
+    fi
+
+    local fixed_cols_width=34
+    if [[ -z "$filter_project" ]]; then
+        fixed_cols_width=$((fixed_cols_width + max_proj_len + 2))
+    fi
+    if [[ $max_title_len -gt 0 ]]; then
+        fixed_cols_width=$((fixed_cols_width + max_title_len + 2))
+    fi
+
+    local term_width
+    term_width=$(tput cols 2>/dev/null || echo 120)
+    local preview_width=$((term_width - fixed_cols_width - 6))
+    if [[ $preview_width -lt 20 ]]; then
+        preview_width=20
+    fi
+    if [[ $preview_width -gt 80 ]]; then
+        preview_width=80
+    fi
+
+    local i
+    for i in "${!SESSION_IDS[@]}"; do
+        local title="${raw_titles[$i]}"
+        local preview="${raw_previews[$i]}"
+
+        if [[ ${#title} -gt $max_title_len && $max_title_len -gt 0 ]]; then
+            title="${title:0:$((max_title_len - 1))}…"
+        fi
+
+        if [[ ${#preview} -gt $preview_width ]]; then
+            preview="${preview:0:$((preview_width - 1))}…"
         fi
 
         local line
         if [[ -n "$filter_project" ]]; then
-            line=$(printf "%-16s %5s %3d msgs  %s" "$date_str" "$duration" "$msg_count" "$preview")
+            if [[ $max_title_len -gt 0 ]]; then
+                line=$(printf "%-16s %7s %4d msgs  %-${max_title_len}s  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "$title" "$preview")
+            else
+                line=$(printf "%-16s %7s %4d msgs  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "$preview")
+            fi
         else
-            line=$(printf "%-16s %5s %3d msgs  %-20s  %s" "$date_str" "$duration" "$msg_count" "$proj_name" "$preview")
+            if [[ $max_title_len -gt 0 ]]; then
+                line=$(printf "%-16s %7s %4d msgs  %-${max_proj_len}s  %-${max_title_len}s  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "${raw_projects[$i]}" "$title" "$preview")
+            else
+                line=$(printf "%-16s %7s %4d msgs  %-${max_proj_len}s  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "${raw_projects[$i]}" "$preview")
+            fi
         fi
         DISPLAY_LINES+=("$line")
-    done <<< "$data"
+    done
 
     local total=${#SESSION_IDS[@]}
 
