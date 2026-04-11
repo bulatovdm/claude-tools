@@ -12,6 +12,7 @@ readonly COLOR_YELLOW="\033[33m"
 readonly COLOR_RED="\033[31m"
 readonly COLOR_CYAN="\033[36m"
 readonly COLOR_DIM="\033[2m"
+readonly COLOR_ITALIC="\033[3m"
 readonly COLOR_BOLD="\033[1m"
 readonly COLOR_RESET="\033[0m"
 
@@ -69,7 +70,7 @@ build_session_list() {
             ($proj == "") or
             (.project // "" | contains($proj))
         )
-        | [.sessionId, (.timestamp | tostring), (.project // ""), (.display // "" | gsub("\n"; " ") | if length > 80 then .[:80] + "…" else . end)]
+        | [.sessionId, (.timestamp | tostring), (.project // ""), (.display // "" | gsub("\n"; " ") | gsub("\t"; " ") | if length > 300 then .[:300] else . end)]
         | @tsv
     ' "$HISTORY_FILE" | awk -F'\t' '
     {
@@ -135,6 +136,26 @@ format_duration() {
         local m=$(( (diff_sec % 3600) / 60 ))
         echo "${h}h${m}m"
     fi
+}
+
+print_wrapped_preview() {
+    local text="$1"
+    local padding="$2"
+    local width="$3"
+    local truncated="${4:-false}"
+
+    while [[ ${#text} -gt 0 ]]; do
+        if [[ ${#text} -le $width ]]; then
+            local suffix=""
+            if [[ "$truncated" == "true" ]]; then
+                suffix="…"
+            fi
+            printf "%s\033[38;5;250m${COLOR_ITALIC}%s%s${COLOR_RESET}\n" "$padding" "$text" "$suffix"
+            break
+        fi
+        printf "%s\033[38;5;250m${COLOR_ITALIC}%s${COLOR_RESET}\n" "$padding" "${text:0:$width}"
+        text="${text:$width}"
+    done
 }
 
 extract_project_name() {
@@ -242,15 +263,9 @@ display_sessions() {
         fixed_cols_width=$((fixed_cols_width + max_title_len + 2))
     fi
 
-    local term_width
-    term_width=$(tput cols 2>/dev/null || echo 120)
-    local preview_width=$((term_width - fixed_cols_width - 6))
-    if [[ $preview_width -lt 20 ]]; then
-        preview_width=20
-    fi
-    if [[ $preview_width -gt 80 ]]; then
-        preview_width=80
-    fi
+    local preview_max=200
+    PREVIEW_LINES=()
+    PREVIEW_TRUNCATED=()
 
     local i
     for i in "${!SESSION_IDS[@]}"; do
@@ -261,28 +276,40 @@ display_sessions() {
             title="${title:0:$((max_title_len - 1))}…"
         fi
 
-        if [[ ${#preview} -gt $preview_width ]]; then
-            preview="${preview:0:$((preview_width - 1))}…"
+        local truncated="false"
+        if [[ ${#preview} -ge $preview_max ]]; then
+            preview="${preview:0:$preview_max}"
+            truncated="true"
         fi
+        PREVIEW_LINES+=("$preview")
+        PREVIEW_TRUNCATED+=("$truncated")
 
         local line
         if [[ -n "$filter_project" ]]; then
             if [[ $max_title_len -gt 0 ]]; then
-                line=$(printf "%-16s %7s %4d msgs  %-${max_title_len}s  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "$title" "$preview")
+                line=$(printf "%-16s %7s %4d msgs  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "$title")
             else
-                line=$(printf "%-16s %7s %4d msgs  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "$preview")
+                line=$(printf "%-16s %7s %4d msgs" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}")
             fi
         else
             if [[ $max_title_len -gt 0 ]]; then
-                line=$(printf "%-16s %7s %4d msgs  %-${max_proj_len}s  %-${max_title_len}s  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "${raw_projects[$i]}" "$title" "$preview")
+                line=$(printf "%-16s %7s %4d msgs  %-${max_proj_len}s  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "${raw_projects[$i]}" "$title")
             else
-                line=$(printf "%-16s %7s %4d msgs  %-${max_proj_len}s  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "${raw_projects[$i]}" "$preview")
+                line=$(printf "%-16s %7s %4d msgs  %s" "${raw_dates[$i]}" "${raw_durations[$i]}" "${raw_msg_counts[$i]}" "${raw_projects[$i]}")
             fi
         fi
         DISPLAY_LINES+=("$line")
     done
 
     local total=${#SESSION_IDS[@]}
+    local term_width
+    term_width=${COLUMNS:-$(stty size 2>/dev/null | awk '{print $2}')}
+    term_width=${term_width:-$(tput cols 2>/dev/null || echo 120)}
+    local padding="      "
+    local wrap_width=$((term_width - ${#padding}))
+    if [[ $wrap_width -lt 40 ]]; then
+        wrap_width=40
+    fi
 
     if [[ "$interactive" != "true" ]]; then
         echo -e "${COLOR_BOLD}Sessions${COLOR_RESET} ${COLOR_DIM}($total)${COLOR_RESET}"
@@ -290,6 +317,10 @@ display_sessions() {
         for i in "${!DISPLAY_LINES[@]}"; do
             local num=$((i + 1))
             printf "${COLOR_DIM}%2d${COLOR_RESET}  %s\n" "$num" "${DISPLAY_LINES[$i]}"
+            if [[ -n "${PREVIEW_LINES[$i]}" ]]; then
+                print_wrapped_preview "${PREVIEW_LINES[$i]}" "$padding" "$wrap_width" "${PREVIEW_TRUNCATED[$i]}" "${PREVIEW_TRUNCATED[$i]}"
+            fi
+            echo ""
         done
         echo ""
         echo -e "${COLOR_DIM}Resume: claude --resume <session-id>${COLOR_RESET}"
@@ -309,7 +340,11 @@ pick_with_fzf() {
     local fzf_input=""
     local i
     for i in "${!DISPLAY_LINES[@]}"; do
-        fzf_input+="${SESSION_IDS[$i]}"$'\t'"${DISPLAY_LINES[$i]}"$'\n'
+        local combined="${DISPLAY_LINES[$i]}"
+        if [[ -n "${PREVIEW_LINES[$i]}" ]]; then
+            combined="${combined}  ${PREVIEW_LINES[$i]}"
+        fi
+        fzf_input+="${SESSION_IDS[$i]}"$'\t'"${combined}"$'\n'
     done
 
     local selected
@@ -334,6 +369,14 @@ pick_with_fzf() {
 
 pick_with_select() {
     local total="$1"
+    local term_width
+    term_width=${COLUMNS:-$(stty size 2>/dev/null | awk '{print $2}')}
+    term_width=${term_width:-$(tput cols 2>/dev/null || echo 120)}
+    local padding="        "
+    local wrap_width=$((term_width - ${#padding}))
+    if [[ $wrap_width -lt 40 ]]; then
+        wrap_width=40
+    fi
 
     echo -e "${COLOR_BOLD}Sessions${COLOR_RESET} ${COLOR_DIM}($total)${COLOR_RESET}"
     echo ""
@@ -342,6 +385,10 @@ pick_with_select() {
     for i in "${!DISPLAY_LINES[@]}"; do
         local num=$((i + 1))
         printf "  ${COLOR_CYAN}%2d${COLOR_RESET}  %s\n" "$num" "${DISPLAY_LINES[$i]}"
+        if [[ -n "${PREVIEW_LINES[$i]}" ]]; then
+            print_wrapped_preview "${PREVIEW_LINES[$i]}" "$padding" "$wrap_width" "${PREVIEW_TRUNCATED[$i]}"
+        fi
+        echo ""
     done
 
     echo ""
