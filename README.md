@@ -71,6 +71,27 @@ If the project has its own `commit-msg` hook in `.git/hooks/`, it will be called
 
 > **Note:** Projects that override `core.hooksPath` locally (e.g. `core.hooksPath = .githooks`) bypass global hooks entirely. For those projects, add Claude signature cleanup to the project's own `commit-msg` hook.
 
+### Malformed Tool-Call Hook
+
+A `Stop` hook that catches malformed tool calls left as raw text in the model's last message (an unparsed tool-invocation block that never became a real tool_use). When detected, it blocks the stop so the model retries the call cleanly instead of halting and waiting for the user.
+
+Enabled and disabled independently of the main installer:
+
+```bash
+scripts/hooks/malformed-toolcall-hook.sh enable    # install + register in settings.json
+scripts/hooks/malformed-toolcall-hook.sh disable   # remove from settings.json
+scripts/hooks/malformed-toolcall-hook.sh status    # show current state
+```
+
+A kill-switch flag disables the hook globally without changing `settings.json`:
+
+```bash
+touch ~/.claude/.disable-malformed-toolcall-hook    # off
+rm ~/.claude/.disable-malformed-toolcall-hook       # on
+```
+
+Changes take effect from the next Claude Code session (or after opening `/hooks`).
+
 ## Requirements
 
 - [Claude Code](https://claude.ai/claude-code) CLI
