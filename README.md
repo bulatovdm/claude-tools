@@ -9,20 +9,26 @@ Custom tools and scripts for [Claude Code](https://claude.ai/claude-code) CLI.
 Visual status bar showing model, context usage, subscription limits, cost, and session time:
 
 ```
-Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% 1h34m ◑ │ Week: 35% 6d12h ● │ Sonnet: 0% 6d14h ● │ Cost: $1.25 │ Time: 17m
+Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% 1h34m ◑ │ Week: 35% 6d12h ● │ Cost: $1.25 │ Time: 17m
 ```
 
 - **Model** — current model name (cyan)
 - **Context** — context window usage with progress bar (green → yellow → red)
 - **5h** — 5-hour usage window utilization with countdown to reset
 - **Week** — 7-day usage window utilization with countdown to reset
-- **Sonnet** — weekly Sonnet-specific usage limit with countdown to reset
+- **Sonnet** — weekly Sonnet-specific usage limit (hidden by default; see [Configuration](#configuration))
 - **Cost** — session cost in USD
 - **Time** — session duration
 
 Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) → ◑ (>37%) → ◔ (>12%) → ○ (reset imminent).
 
 All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STATUSLINE_SHOW_SONNET` | `0` | Show the weekly Sonnet-specific limit. Hidden by default since this separate limit was removed; set to `1` to display it. |
 
 ### Multi-Session Support
 

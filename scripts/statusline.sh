@@ -18,6 +18,8 @@ readonly BAR_EMPTY="░"
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+readonly SHOW_SONNET="${STATUSLINE_SHOW_SONNET:-0}"
+
 show_help() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS]
@@ -325,10 +327,13 @@ format_output() {
     local model_part="${COLOR_CYAN}${model}${COLOR_RESET}"
     local five_hour_part
     local seven_day_part
-    local sonnet_part
     five_hour_part=$(format_usage_part "5h" "$five_hour" "$five_hour_reset" "18000")
     seven_day_part=$(format_usage_part "Week" "$seven_day" "$seven_day_reset" "604800")
-    sonnet_part=$(format_usage_part "Sonnet" "$sonnet" "$sonnet_reset" "604800")
+
+    local sonnet_part=""
+    if [[ "$SHOW_SONNET" != "0" ]]; then
+        sonnet_part=" ${COLOR_GRAY}│${COLOR_RESET} $(format_usage_part "Sonnet" "$sonnet" "$sonnet_reset" "604800")"
+    fi
 
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
@@ -338,7 +343,7 @@ format_output() {
         status_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_YELLOW}⚠ ${error_msg}${COLOR_RESET}"
     fi
 
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${status_part}"
+    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part}${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${status_part}"
 }
 
 run_test() {

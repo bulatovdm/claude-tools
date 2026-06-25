@@ -270,12 +270,21 @@ assert_equals "negative clamped to empty" "$bar" "░░░░░░░░░░
 echo ""
 echo "[format_output]"
 
-output=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
+output=$(STATUSLINE_SHOW_SONNET=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
 assert_contains "contains model name" "$output" "Opus"
 assert_contains "contains context percentage" "$output" "45%"
 assert_contains "contains 5h limit" "$output" "5h: 10%"
 assert_contains "contains week limit" "$output" "Week: 30%"
 assert_contains "contains sonnet limit" "$output" "Sonnet: 5%"
+
+output_default=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
+if echo "$output_default" | grep -qF "Sonnet:"; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: sonnet hidden by default"
+else
+    PASS=$((PASS + 1))
+    echo "  PASS: sonnet hidden by default"
+fi
 assert_contains "contains timer icon" "$output" "◑"
 assert_contains "contains reset time" "$output" "h"
 assert_contains "contains cost" "$output" '$1.25'
@@ -454,6 +463,7 @@ echo "{\"five_hour\":{\"utilization\":12.0,\"resets_at\":\"${RESET_2H}.000000+00
 
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "
+        STATUSLINE_SHOW_SONNET=1
         source '$TEST_SCRIPT'
         source '$TEST_CHROME'
         USAGE_CACHE_FILE='$INT_CACHE'
@@ -520,7 +530,7 @@ assert_contains "82% usage is red" "$high_usage" "31m"
 echo ""
 echo "[Test mode]"
 
-test_output=$(bash "$STATUSLINE" --test | strip_colors)
+test_output=$(STATUSLINE_SHOW_SONNET=1 bash "$STATUSLINE" --test | strip_colors)
 assert_contains "test shows low usage" "$test_output" "45%"
 assert_contains "test shows high usage" "$test_output" "85%"
 assert_contains "test shows no limits" "$test_output" "?"
