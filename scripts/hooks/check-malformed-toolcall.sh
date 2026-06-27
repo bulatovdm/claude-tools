@@ -60,10 +60,17 @@ with open(path) as f:
 if last_text is None:
     sys.exit(1)
 
-invoke = "in" + "voke name="
-parameter = "para" + "meter name="
-markers = ["<" + invoke, "<" + parameter, "</" + "in" + "voke>", "</" + "para" + "meter>"]
-sys.exit(0 if any(marker in last_text for marker in markers) else 1)
+import re
+
+# Real malformed tool calls carry an OPENING signature tag with a name=
+# attribute, serialized as markup at the start of a line (after optional
+# indentation). Prose that merely mentions the tags — e.g. while editing
+# this very hook — embeds them mid-sentence or inside backticks, so we
+# anchor to line-start to avoid those false positives.
+invoke = "in" + "voke"
+parameter = "para" + "meter"
+signature = re.compile(r"(?m)^[ \t]*<(?:" + invoke + "|" + parameter + r")\s+name=")
+sys.exit(0 if signature.search(last_text) else 1)
 PY
 }
 

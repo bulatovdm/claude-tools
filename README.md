@@ -81,6 +81,8 @@ If the project has its own `commit-msg` hook in `.git/hooks/`, it will be called
 
 A `Stop` hook that catches malformed tool calls left as raw text in the model's last message (an unparsed tool-invocation block that never became a real tool_use). When detected, it blocks the stop so the model retries the call cleanly instead of halting and waiting for the user.
 
+Detection anchors on an opening signature tag (`<invoke name=` or `<parameter name=`) at the start of a line — the way a real tool call serializes. Prose that merely mentions the tags mid-sentence (e.g. while editing this hook) no longer triggers a false block.
+
 If the retry is also malformed, the hook keeps nudging — up to 3 attempts per session (tracked in `~/.claude/.malformed-toolcall-attempts/`), then gives up to the user to avoid an infinite loop. A clean turn resets the counter. (Earlier versions bailed out on the very first repeat via the `stop_hook_active` reentrancy guard, which is why the model could still hang after a single failed retry.)
 
 Enabled and disabled independently of the main installer:

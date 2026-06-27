@@ -47,8 +47,16 @@ assert_contains() {
     fi
 }
 
+# A realistic malformed tool call: an opening signature tag with a name=
+# attribute serialized as markup at the start of a line, plus the stray tail.
 raw_marker() {
-    printf '</%s>' "para""meter"
+    printf '<%s name="command">npm test</%s>\n</%s>' \
+        "para""meter" "para""meter" "in""voke"
+}
+
+# Prose that merely mentions the tags mid-sentence — must NOT trigger.
+prose_marker() {
+    printf 'fix the stray `</%s>` left after the heredoc' "para""meter"
 }
 
 write_transcript() {
@@ -80,13 +88,21 @@ echo "Running malformed tool-call hook tests..."
 
 MALFORMED="$WORK_DIR/malformed.jsonl"
 CLEAN="$WORK_DIR/clean.jsonl"
-write_transcript "$MALFORMED" "some text $(raw_marker)"
+PROSE="$WORK_DIR/prose.jsonl"
+write_transcript "$MALFORMED" "Some explanation, then the broken call:
+$(raw_marker)"
 write_transcript "$CLEAN" "a perfectly normal final message"
+write_transcript "$PROSE" "$(prose_marker)"
 
 echo
 echo "Test: clean transcript produces no block"
 out=$(run_hook "$CLEAN" "sess-clean")
 assert_equals "clean → empty stdout" "$out" ""
+
+echo
+echo "Test: prose that mentions tags mid-sentence does NOT block"
+out=$(run_hook "$PROSE" "sess-prose")
+assert_equals "prose mention → empty stdout" "$out" ""
 
 echo
 echo "Test: malformed transcript blocks on first three attempts"
