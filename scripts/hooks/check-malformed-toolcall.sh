@@ -62,15 +62,24 @@ if last_text is None:
 
 import re
 
+# Strip fenced code blocks and inline code first: a model explaining this
+# hook often quotes a tool-call tag as an EXAMPLE inside ``` or `...`, and
+# that quote must not count as a real malformed call.
+def strip_code(text):
+    text = re.sub(r"(?ms)^[ \t]*```.*?^[ \t]*```", "", text)
+    text = re.sub(r"`[^`\n]*`", "", text)
+    return text
+
 # Real malformed tool calls carry an OPENING signature tag with a name=
 # attribute, serialized as markup at the start of a line (after optional
 # indentation). Prose that merely mentions the tags — e.g. while editing
 # this very hook — embeds them mid-sentence or inside backticks, so we
-# anchor to line-start to avoid those false positives.
+# anchor to line-start and ignore code-quoted examples to avoid false
+# positives.
 invoke = "in" + "voke"
 parameter = "para" + "meter"
 signature = re.compile(r"(?m)^[ \t]*<(?:" + invoke + "|" + parameter + r")\s+name=")
-sys.exit(0 if signature.search(last_text) else 1)
+sys.exit(0 if signature.search(strip_code(last_text)) else 1)
 PY
 }
 

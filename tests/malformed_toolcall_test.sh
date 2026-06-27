@@ -59,6 +59,13 @@ prose_marker() {
     printf 'fix the stray `</%s>` left after the heredoc' "para""meter"
 }
 
+# A tool-call tag quoted as an EXAMPLE inside a fenced code block, even at
+# line start — must NOT trigger.
+fenced_marker() {
+    printf 'a real call looks like:\n```\n<%s name="command">ls</%s>\n```\nthat is the shape' \
+        "para""meter" "para""meter"
+}
+
 write_transcript() {
     local file=$1
     local last_text=$2
@@ -89,15 +96,22 @@ echo "Running malformed tool-call hook tests..."
 MALFORMED="$WORK_DIR/malformed.jsonl"
 CLEAN="$WORK_DIR/clean.jsonl"
 PROSE="$WORK_DIR/prose.jsonl"
+FENCED="$WORK_DIR/fenced.jsonl"
 write_transcript "$MALFORMED" "Some explanation, then the broken call:
 $(raw_marker)"
 write_transcript "$CLEAN" "a perfectly normal final message"
 write_transcript "$PROSE" "$(prose_marker)"
+write_transcript "$FENCED" "$(fenced_marker)"
 
 echo
 echo "Test: clean transcript produces no block"
 out=$(run_hook "$CLEAN" "sess-clean")
 assert_equals "clean → empty stdout" "$out" ""
+
+echo
+echo "Test: a tag quoted inside a fenced code block does NOT block"
+out=$(run_hook "$FENCED" "sess-fenced")
+assert_equals "fenced example → empty stdout" "$out" ""
 
 echo
 echo "Test: prose that mentions tags mid-sentence does NOT block"
