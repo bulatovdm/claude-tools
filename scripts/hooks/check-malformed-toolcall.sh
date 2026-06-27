@@ -97,8 +97,8 @@ main() {
 
     if (( attempts > MAX_BLOCKS )); then
         rm -f "$attempt_file"
-        echo "Malformed tool call persisted after $MAX_BLOCKS retries; stopping to avoid a loop. Please fix the tool-call syntax manually." >&2
-        exit 0
+        echo "Malformed tool call persisted after $MAX_BLOCKS retries — not blocking again to avoid a loop. The same call keeps failing to serialize; the cause is usually a multi-line bash command with a heredoc or nested quotes inside \$(...). STOP retrying the same shape: split the command into separate single-purpose tool calls, drop the heredoc, or write the script to a file first. Then tell the user what failed." >&2
+        exit 2
     fi
 
     emit_block "$BLOCK_REASON (retry $attempts/$MAX_BLOCKS)"

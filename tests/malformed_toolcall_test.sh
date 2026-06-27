@@ -99,10 +99,13 @@ for n in 1 2 3; do
 done
 
 echo
-echo "Test: fourth attempt gives up (no block, stderr warning)"
-out=$(run_hook "$MALFORMED" "sess-block")
-assert_equals "attempt 4 → no block" "$out" ""
-assert_contains "attempt 4 → stderr warns" "$(cat "$WORK_DIR/stderr")" "persisted after 3 retries"
+echo "Test: fourth attempt gives up with a visible exit-2 message"
+code=0
+out=$(run_hook "$MALFORMED" "sess-block") || code=$?
+assert_equals "attempt 4 → no block on stdout" "$out" ""
+assert_equals "attempt 4 → exit code 2" "$code" "2"
+assert_contains "attempt 4 → stderr explains cause" "$(cat "$WORK_DIR/stderr")" "persisted after 3 retries"
+assert_contains "attempt 4 → stderr suggests fix" "$(cat "$WORK_DIR/stderr")" "split the command"
 
 echo
 echo "Test: counter resets after a clean turn"
