@@ -1,0 +1,38 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Strip Claude signatures from the commit that was just created.
+#
+# Why post-commit and not only commit-msg: `git commit --no-verify` bypasses
+# commit-msg entirely, so a signature slips through. post-commit runs even with
+# --no-verify, so it catches that path (plain commits and conflict-resolved
+# merge commits alike) by amending the message in place.
+#
+# Not covered here: a clean (conflict-free) merge. git skips post-commit for
+# auto-created merge commits, and amending is impossible while MERGE_HEAD is
+# set ("cannot amend"). commit-msg still cleans those, except the rare
+# `git merge --no-verify`.
+
+# Re-entry guard: our own --amend re-fires post-commit.
+if [[ -n "${CLAUDE_SIG_STRIP:-}" ]]; then
+    exit 0
+fi
+
+git_dir=$(git rev-parse --git-dir 2>/dev/null || true)
+[[ -n "$git_dir" ]] || exit 0
+
+# Never rewrite HEAD while a multi-step operation is mid-flight.
+for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+    [[ -e "$git_dir/$state" ]] && exit 0
+done
+
+msg=$(git log -1 --format=%B)
+cleaned=$(printf '%s' "$msg" \
+    | grep -vE '[Cc]o-[Aa]uthored-[Bb]y:.*<noreply@anthropic.com>' \
+    | grep -vF '🤖 Generated with [Claude Code]')
+
+# Nothing to strip → leave the commit untouched (no needless rewrite).
+[[ "$msg" == "$cleaned" ]] && exit 0
+
+CLAUDE_SIG_STRIP=1 git commit --amend --no-verify --no-edit -m "$cleaned" >/dev/null 2>&1

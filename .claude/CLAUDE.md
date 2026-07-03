@@ -3,11 +3,12 @@
 ## Структура проекта
 
 ```
-scripts/statusline.sh    - Скрипт статус-линии для Claude Code
-scripts/session.sh       - Интерактивный пикер сессий (alias: cs)
-scripts/git-hooks/       - Глобальные git-хуки (чистка подписей Claude)
-tests/statusline_test.sh - Тесты статус-линии
-install.sh               - Скрипт установки
+scripts/statusline.sh        - Скрипт статус-линии для Claude Code
+scripts/session.sh           - Интерактивный пикер сессий (alias: cs)
+scripts/git-hooks/           - Глобальные git-хуки (чистка подписей Claude): commit-msg + post-commit
+scripts/link-global-hooks.sh - Делегаторы к глобальным хукам для проектов с локальным core.hooksPath
+tests/statusline_test.sh     - Тесты статус-линии
+install.sh                   - Скрипт установки
 ```
 
 ## Правила работы

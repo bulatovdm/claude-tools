@@ -69,13 +69,20 @@ If `fzf` is installed, uses fuzzy finder for selection. Otherwise falls back to 
 
 Global git hooks that clean up auto-generated Claude Code signatures from commit messages:
 
-- Removes `Co-Authored-By: ... <noreply@anthropic.com>`
+- Removes `Co-Authored-By: ... <noreply@anthropic.com>` (case-insensitive)
 - Removes `🤖 Generated with [Claude Code]`
 - Strips trailing blank lines
 
+Two hooks work together so the signature is stripped regardless of how the commit was made:
+
+- **`commit-msg`** cleans the message before the commit is written. Covers plain commits and merges — but `git commit --no-verify` bypasses it entirely (by git design).
+- **`post-commit`** cleans the message *after* the commit by amending in place. It runs even with `--no-verify`, so it closes that gap for plain commits and conflict-resolved merge commits. It is re-entry guarded and skips mid-operation states (rebase/cherry-pick).
+
+The one path neither fully covers is a **clean (conflict-free) merge made with `git merge --no-verify`**: git skips `post-commit` for auto-created merge commits, and amending is impossible while `MERGE_HEAD` is set. A normal `git merge` (without `--no-verify`) is still cleaned by `commit-msg`.
+
 If the project has its own `commit-msg` hook in `.git/hooks/`, it will be called after cleanup — so local project hooks (conventional commits validation, etc.) still work.
 
-> **Note:** Projects that override `core.hooksPath` locally (e.g. `core.hooksPath = .githooks`) bypass global hooks entirely. For those projects, add Claude signature cleanup to the project's own `commit-msg` hook.
+> **Note:** Projects that override `core.hooksPath` locally (e.g. `core.hooksPath = .githooks`) bypass global hooks entirely — git honours only one hooksPath. Run `scripts/link-global-hooks.sh [PROJECT_DIR]` inside such a project to wire its local hooks dir to the global ones: it installs thin `commit-msg` / `post-commit` delegators that call the global hook and then any pre-existing project hook (which is preserved as `.<hook>.project`). So Claude signatures get cleaned while the project's own logic (conventional-commits validation, composer checks, …) keeps running. Re-running the script is idempotent.
 
 ### Malformed Tool-Call Hook
 
