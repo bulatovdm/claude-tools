@@ -19,6 +19,7 @@ readonly BAR_EMPTY="░"
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 readonly SHOW_SONNET="${STATUSLINE_SHOW_SONNET:-0}"
+readonly SHOW_FABLE="${STATUSLINE_SHOW_FABLE:-0}"
 
 show_help() {
     cat << EOF
@@ -317,6 +318,8 @@ format_output() {
     local cost=$9
     local duration_ms=${10}
     local error_msg=${11:-}
+    local fable=${12:-}
+    local fable_reset=${13:-}
 
     local used_color
     local used_bar
@@ -335,6 +338,11 @@ format_output() {
         sonnet_part=" ${COLOR_GRAY}│${COLOR_RESET} $(format_usage_part "Sonnet" "$sonnet" "$sonnet_reset" "604800")"
     fi
 
+    local fable_part=""
+    if [[ "$SHOW_FABLE" != "0" ]]; then
+        fable_part=" ${COLOR_GRAY}│${COLOR_RESET} $(format_usage_part "Fable" "$fable" "$fable_reset" "604800")"
+    fi
+
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
 
@@ -343,7 +351,7 @@ format_output() {
         status_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_YELLOW}⚠ ${error_msg}${COLOR_RESET}"
     fi
 
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part}${sonnet_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${status_part}"
+    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part}${sonnet_part}${fable_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${status_part}"
 }
 
 run_test() {
@@ -358,13 +366,13 @@ run_test() {
     reset_5d=$(date -r $((now_epoch + 432000)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
 
     echo "Low usage (45%), short session:"
-    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000"
+    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d"
     echo ""
     echo "Medium usage (70%), longer session:"
-    format_output "70" "Sonnet" "50" "60" "20" "$reset_2h" "$reset_6d" "$reset_5d" "2.15" "1800000"
+    format_output "70" "Sonnet" "50" "60" "20" "$reset_2h" "$reset_6d" "$reset_5d" "2.15" "1800000" "" "40" "$reset_5d"
     echo ""
     echo "High usage (85%), expensive session:"
-    format_output "85" "Opus" "80" "90" "65" "$reset_2h" "$reset_6d" "$reset_5d" "8.73" "7200000"
+    format_output "85" "Opus" "80" "90" "65" "$reset_2h" "$reset_6d" "$reset_5d" "8.73" "7200000" "" "88" "$reset_5d"
     echo ""
     echo "No limits data:"
     format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000"
@@ -386,6 +394,8 @@ main() {
     local five_hour_reset
     local seven_day_reset
     local sonnet_reset
+    local fable
+    local fable_reset
     local rest
 
     input=$(cat)
@@ -399,7 +409,7 @@ main() {
     if [[ "${usage_data%%|*}" == error:* ]]; then
         error_msg="${usage_data%%|*}"
         error_msg="${error_msg#error:}"
-        usage_data="|||||"
+        usage_data="|||||||"
     fi
     five_hour="${usage_data%%|*}"
     rest="${usage_data#*|}"
@@ -410,9 +420,13 @@ main() {
     five_hour_reset="${rest%%|*}"
     rest="${rest#*|}"
     seven_day_reset="${rest%%|*}"
-    sonnet_reset="${rest#*|}"
+    rest="${rest#*|}"
+    sonnet_reset="${rest%%|*}"
+    rest="${rest#*|}"
+    fable="${rest%%|*}"
+    fable_reset="${rest#*|}"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg" "$fable" "$fable_reset"
 }
 
 case "${1:-}" in

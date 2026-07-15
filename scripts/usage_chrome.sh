@@ -140,19 +140,44 @@ with_fetch_lock() {
     trap - EXIT
 }
 
+# Model-scoped weekly limits moved from top-level seven_day_<model> keys
+# into limits[] entries matched by scope.model.display_name
+scoped_model_field() {
+    local display_name=$1
+    local field=$2
+    local legacy_key
+    legacy_key="seven_day_$(echo "$display_name" | tr '[:upper:]' '[:lower:]')"
+
+    jq -r --arg name "$display_name" --arg field "$field" --arg legacy "$legacy_key" '
+        (.limits // [])
+        | map(select(.scope.model.display_name == $name))
+        | first
+        | if . then .[$field] else null end
+    ' "$USAGE_CACHE_FILE" 2>/dev/null | grep -v '^null$' && return 0
+
+    local legacy_field
+    [[ "$field" == "percent" ]] && legacy_field="utilization" || legacy_field="$field"
+    jq -r --arg key "$legacy_key" --arg field "$legacy_field" '
+        .[$key] | if . then .[$field] // empty else empty end
+    ' "$USAGE_CACHE_FILE" 2>/dev/null
+}
+
 read_usage_from_cache() {
     [[ -f "$USAGE_CACHE_FILE" ]] || return 1
     (( $(date +%s) - $(stat -f %m "$USAGE_CACHE_FILE" 2>/dev/null || echo 0) > USAGE_CACHE_STALE_AGE )) && return 1
     jq -e '.five_hour' "$USAGE_CACHE_FILE" >/dev/null 2>&1 || return 1
 
     local five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset
+    local fable fable_reset
     five_hour=$(jq -r '.five_hour.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
     seven_day=$(jq -r '.seven_day.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
-    sonnet=$(jq -r '.seven_day_sonnet.utilization // empty' "$USAGE_CACHE_FILE" 2>/dev/null | cut -d'.' -f1)
+    sonnet=$(scoped_model_field "Sonnet" "percent" | cut -d'.' -f1)
+    fable=$(scoped_model_field "Fable" "percent" | cut -d'.' -f1)
     five_hour_reset=$(jq -r '.five_hour.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
     seven_day_reset=$(jq -r '.seven_day.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
-    sonnet_reset=$(jq -r '.seven_day_sonnet.resets_at // empty' "$USAGE_CACHE_FILE" 2>/dev/null)
-    echo "${five_hour:-}|${seven_day:-}|${sonnet:-}|${five_hour_reset:-}|${seven_day_reset:-}|${sonnet_reset:-}"
+    sonnet_reset=$(scoped_model_field "Sonnet" "resets_at")
+    fable_reset=$(scoped_model_field "Fable" "resets_at")
+    echo "${five_hour:-}|${seven_day:-}|${sonnet:-}|${five_hour_reset:-}|${seven_day_reset:-}|${sonnet_reset:-}|${fable:-}|${fable_reset:-}"
 }
 
 get_usage_limits_chrome() {

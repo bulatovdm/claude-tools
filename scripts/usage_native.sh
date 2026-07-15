@@ -33,5 +33,7 @@ get_usage_limits_native() {
         seven_day_reset=$(unix_to_iso "$seven_day_reset_unix") || seven_day_reset=""
     fi
 
-    echo "${five_hour:-}|${seven_day:-}||${five_hour_reset:-}|${seven_day_reset:-}|"
+    # Trailing empty fields: sonnet, sonnet_reset, fable, fable_reset —
+    # native stdin has no model-scoped limits
+    echo "${five_hour:-}|${seven_day:-}||${five_hour_reset:-}|${seven_day_reset:-}|||"
 }

@@ -17,6 +17,7 @@ Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 
 - **5h** — 5-hour usage window utilization with countdown to reset
 - **Week** — 7-day usage window utilization with countdown to reset
 - **Sonnet** — weekly Sonnet-specific usage limit (hidden by default; see [Configuration](#configuration))
+- **Fable** — weekly Fable-specific usage limit (hidden by default; see [Configuration](#configuration))
 - **Cost** — session cost in USD
 - **Time** — session duration
 
@@ -28,7 +29,10 @@ All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STATUSLINE_SHOW_SONNET` | `0` | Show the weekly Sonnet-specific limit. Hidden by default since this separate limit was removed; set to `1` to display it. |
+| `STATUSLINE_SHOW_SONNET` | `0` | Show the weekly Sonnet-specific limit. Set to `1` to display it. Currently the API reports no Sonnet-scoped limit, so this shows `Sonnet: ?`. |
+| `STATUSLINE_SHOW_FABLE` | `0` | Show the weekly Fable-specific limit. Set to `1` to display it. Fable replaced Sonnet as the model-scoped weekly limit reported by the API. |
+
+Model-scoped weekly limits are read from the `limits[]` array in the claude.ai usage response, matched by `scope.model.display_name`. The legacy top-level `seven_day_<model>` keys are still used as a fallback when present.
 
 ### Multi-Session Support
 
@@ -36,9 +40,9 @@ When running multiple Claude Code sessions simultaneously, each session independ
 
 ### How It Works
 
-Usage limits are fetched from **claude.ai via Chrome AppleScript** — the script executes an XHR request directly in an open claude.ai browser tab, bypassing Cloudflare and OAuth token issues. Data is cached for 5 minutes. This provides the most complete data including Sonnet-specific weekly limits.
+Usage limits are fetched from **claude.ai via Chrome AppleScript** — the script executes an XHR request directly in an open claude.ai browser tab, bypassing Cloudflare and OAuth token issues. Data is cached for 5 minutes. This provides the most complete data including model-scoped weekly limits.
 
-> **Note:** Claude Code v2.1.80+ provides `rate_limits` in the statusline stdin JSON natively, but currently without Sonnet-specific limits. A native usage module (`usage_native.sh`) is included for future use when the native API becomes more complete.
+> **Note:** Claude Code v2.1.80+ provides `rate_limits` in the statusline stdin JSON natively, but currently without model-scoped limits. A native usage module (`usage_native.sh`) is included for future use when the native API becomes more complete.
 
 If no claude.ai tab is found, one is automatically opened. Error states are shown in the status bar:
 

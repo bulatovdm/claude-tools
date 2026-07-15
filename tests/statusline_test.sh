@@ -291,6 +291,25 @@ assert_contains "contains cost" "$output" '$1.25'
 assert_contains "contains time" "$output" "Time: 10m"
 assert_contains "contains separators" "$output" "│"
 
+output_fable=$(STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
+assert_contains "contains fable limit" "$output_fable" "Fable: 7%"
+
+output_default=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
+if echo "$output_default" | grep -qF "Fable:"; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: fable hidden by default"
+else
+    PASS=$((PASS + 1))
+    echo "  PASS: fable hidden by default"
+fi
+
+output_both=$(STATUSLINE_SHOW_SONNET=1 STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
+assert_contains "both flags show sonnet" "$output_both" "Sonnet: 5%"
+assert_contains "both flags show fable" "$output_both" "Fable: 7%"
+
+output_fable_missing=$(STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
+assert_contains "fable without data shows ?" "$output_fable_missing" "Fable: ?"
+
 echo ""
 echo "[format_output error state]"
 
@@ -389,6 +408,52 @@ assert_contains "reads reset times from cache" "$result" "$RESET_2H"
 
 rm -f "$READ_CACHE"
 
+echo ""
+echo "[scoped model limits from limits[]]"
+
+SCOPED_CACHE="/tmp/claude-statusline-test-scoped-$$"
+cat > "$SCOPED_CACHE" << EOF
+{
+  "five_hour": {"utilization": 5.0, "resets_at": "${RESET_2H}.000000+00:00"},
+  "seven_day": {"utilization": 29.0, "resets_at": "${RESET_6D}.000000+00:00"},
+  "seven_day_sonnet": null,
+  "limits": [
+    {"kind": "session", "percent": 5, "resets_at": "${RESET_2H}.000000+00:00", "scope": null},
+    {"kind": "weekly_all", "percent": 29, "resets_at": "${RESET_6D}.000000+00:00", "scope": null},
+    {"kind": "weekly_scoped", "percent": 7, "resets_at": "${RESET_6D}.000000+00:00",
+     "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+  ]
+}
+EOF
+
+result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "scoped_model_field 'Fable' 'percent'")
+assert_equals "extracts fable percent from limits[]" "$result" "7"
+
+result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "scoped_model_field 'Fable' 'resets_at'")
+assert_contains "extracts fable resets_at from limits[]" "$result" "$RESET_6D"
+
+result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "scoped_model_field 'Sonnet' 'percent'")
+assert_equals "absent model yields empty" "$result" ""
+
+result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome")
+assert_contains "fable appended to usage line" "$result" "|7|"
+
+rm -f "$SCOPED_CACHE"
+
+LEGACY_CACHE="/tmp/claude-statusline-test-legacy-$$"
+echo "{\"five_hour\":{\"utilization\":5.0},\"seven_day\":{\"utilization\":29.0},\"seven_day_sonnet\":{\"utilization\":12.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$LEGACY_CACHE"
+
+result=$(run_chrome_func_with_cache "$LEGACY_CACHE" "scoped_model_field 'Sonnet' 'percent'")
+assert_equals "falls back to legacy seven_day_sonnet key" "$result" "12.0"
+
+result=$(run_chrome_func_with_cache "$LEGACY_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome")
+assert_contains "legacy sonnet truncated to integer in usage line" "$result" "5|29|12|"
+
+result=$(run_chrome_func_with_cache "$LEGACY_CACHE" "scoped_model_field 'Fable' 'percent'")
+assert_equals "legacy cache without fable yields empty" "$result" ""
+
+rm -f "$LEGACY_CACHE"
+
 EMPTY_CACHE="/tmp/claude-statusline-test-empty-$$"
 rm -f "$EMPTY_CACHE"
 result=$(bash -c "
@@ -445,12 +510,22 @@ assert_contains "native truncates seven_day decimal" "$result" "|66|"
 
 # Missing rate_limits
 result=$(run_native_func "get_usage_limits_native '{\"model\":{\"display_name\":\"Opus\"}}'")
-assert_equals "native handles missing rate_limits" "$result" "|||||"
+assert_equals "native handles missing rate_limits" "$result" "|||||||"
 
 # Partial data (only five_hour)
 partial_input="{\"rate_limits\":{\"five_hour\":{\"used_percentage\":40,\"resets_at\":${RESET_2H_UNIX}}}}"
 result=$(run_native_func "get_usage_limits_native '$partial_input'")
 assert_contains "native handles partial data" "$result" "40|"
+
+# Both fetchers must emit the same field count that statusline.sh parses
+native_fields=$(run_native_func "get_usage_limits_native '$native_input'" | awk -F'|' '{print NF}')
+assert_equals "native emits 8 fields" "$native_fields" "8"
+
+FIELD_CACHE="/tmp/claude-statusline-test-fields-$$"
+echo '{"five_hour":{"utilization":5.0},"seven_day":{"utilization":29.0}}' > "$FIELD_CACHE"
+chrome_fields=$(run_chrome_func_with_cache "$FIELD_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome" | awk -F'|' '{print NF}')
+assert_equals "chrome emits 8 fields" "$chrome_fields" "8"
+rm -f "$FIELD_CACHE"
 
 echo ""
 echo "=== Integration ==="
