@@ -53,7 +53,7 @@ get_color_by_percentage() {
 
     if (( percentage < 60 )); then
         echo "$COLOR_GREEN"
-    elif (( percentage < 80 )); then
+    elif (( percentage < 90 )); then
         echo "$COLOR_YELLOW"
     else
         echo "$COLOR_RED"

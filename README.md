@@ -23,7 +23,7 @@ Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 
 
 Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) → ◑ (>37%) → ◔ (>12%) → ○ (reset imminent).
 
-All indicators are color-coded: green (<60%), yellow (60-80%), red (80%+).
+All indicators are color-coded: green (<60%), yellow (60-90%), red (90%+).
 
 ### Configuration
 

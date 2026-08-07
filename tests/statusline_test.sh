@@ -235,7 +235,10 @@ result=$(run_func "get_color_by_percentage 65")
 assert_contains "65% is yellow" "$result" "33m"
 
 result=$(run_func "get_color_by_percentage 85")
-assert_contains "85% is red" "$result" "31m"
+assert_contains "85% is yellow" "$result" "33m"
+
+result=$(run_func "get_color_by_percentage 95")
+assert_contains "95% is red" "$result" "31m"
 
 result=$(run_func "get_color_by_percentage 59")
 assert_contains "59% is green (boundary)" "$result" "32m"
@@ -243,11 +246,11 @@ assert_contains "59% is green (boundary)" "$result" "32m"
 result=$(run_func "get_color_by_percentage 60")
 assert_contains "60% is yellow (boundary)" "$result" "33m"
 
-result=$(run_func "get_color_by_percentage 79")
-assert_contains "79% is yellow (boundary)" "$result" "33m"
+result=$(run_func "get_color_by_percentage 89")
+assert_contains "89% is yellow (boundary)" "$result" "33m"
 
-result=$(run_func "get_color_by_percentage 80")
-assert_contains "80% is red (boundary)" "$result" "31m"
+result=$(run_func "get_color_by_percentage 90")
+assert_contains "90% is red (boundary)" "$result" "31m"
 
 echo ""
 echo "[build_progress_bar]"
@@ -277,7 +280,7 @@ assert_contains "contains 5h limit" "$output" "5h: 10%"
 assert_contains "contains week limit" "$output" "Week: 30%"
 assert_contains "contains sonnet limit" "$output" "Sonnet: 5%"
 
-output_default=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
+output_default=$(STATUSLINE_SHOW_FABLE= STATUSLINE_SHOW_SONNET= run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
 if echo "$output_default" | grep -qF "Sonnet:"; then
     FAIL=$((FAIL + 1))
     echo "  FAIL: sonnet hidden by default"
@@ -294,7 +297,7 @@ assert_contains "contains separators" "$output" "│"
 output_fable=$(STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
 assert_contains "contains fable limit" "$output_fable" "Fable: 7%"
 
-output_default=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
+output_default=$(STATUSLINE_SHOW_FABLE= STATUSLINE_SHOW_SONNET= run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
 if echo "$output_default" | grep -qF "Fable:"; then
     FAIL=$((FAIL + 1))
     echo "  FAIL: fable hidden by default"
@@ -599,8 +602,8 @@ assert_contains "cost uses yellow" "$low_output" "33m"
 mid_usage=$(run_func "format_usage_part '5h' '65'")
 assert_contains "65% usage is yellow" "$mid_usage" "33m"
 
-high_usage=$(run_func "format_usage_part 'Week' '82'")
-assert_contains "82% usage is red" "$high_usage" "31m"
+high_usage=$(run_func "format_usage_part 'Week' '92'")
+assert_contains "92% usage is red" "$high_usage" "31m"
 
 echo ""
 echo "[Test mode]"

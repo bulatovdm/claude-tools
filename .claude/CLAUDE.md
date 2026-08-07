@@ -44,7 +44,7 @@ Claude Code использует `~/.claude/statusline.sh`, а не файл и�
 - Загружает лимиты использования (5h/weekly) через **Chrome AppleScript** — XHR в контексте открытой вкладки claude.ai
 - Endpoint: `GET /api/organizations/{orgId}/usage` на claude.ai
 - Лимиты кэшируются в `/tmp/claude-statusline-usage-cache` (обновление раз в 5 мин, stale через 10 мин)
-- Цвета: зелёный (<60%), жёлтый (60-80%), красный (80%+)
+- Цвета: зелёный (<60%), жёлтый (60-90%), красный (90%+)
 - При ошибках показывает причину: `⚠ open Chrome`, `⚠ open claude.ai`, `⚠ enable Chrome JS`
 - Если вкладка claude.ai не найдена — автоматически открывает
 - File lock `/tmp/claude-statusline-usage-lock` защищает от параллельных fetch при нескольких сессиях
