@@ -6,13 +6,14 @@ Custom tools and scripts for [Claude Code](https://claude.ai/claude-code) CLI.
 
 ### Status Line
 
-Visual status bar showing model, context usage, subscription limits, cost, and session time:
+Visual status bar showing model, thinking effort, context usage, subscription limits, cost, and session time:
 
 ```
-Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% 1h34m ◑ │ Week: 35% 6d12h ● │ Cost: $1.25 │ Time: 17m
+Opus 4.6 ✻xhigh │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% 1h34m ◑ │ Week: 35% 6d12h ● │ Cost: $1.25 │ Time: 17m
 ```
 
 - **Model** — current model name (cyan)
+- **Effort** — thinking effort level (`low`, `medium`, `high`, `xhigh`, `max`), prefixed with ✻ while thinking is enabled
 - **Context** — context window usage with progress bar (green → yellow → red)
 - **5h** — 5-hour usage window utilization with countdown to reset
 - **Week** — 7-day usage window utilization with countdown to reset
@@ -23,7 +24,9 @@ Opus 4.6 │ Context: ████░░░░░░░░░░░ 30% │ 5h: 
 
 Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) → ◑ (>37%) → ◔ (>12%) → ○ (reset imminent).
 
-All indicators are color-coded: green (<60%), yellow (60-90%), red (90%+).
+All indicators are color-coded: green (<60%), yellow (60-90%), red (90%+). The effort level has its own scale: `low`/`medium` gray, `high` cyan, `xhigh`/`max` yellow.
+
+Effort and thinking state come from the statusline stdin JSON (`.effort.level` and `.thinking.enabled`). Unlike model and context window, they are not frozen at session start — both are re-read on every render. On Claude Code versions that don't send these fields, the effort indicator is simply omitted.
 
 ### Configuration
 

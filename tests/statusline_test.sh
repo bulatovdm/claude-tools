@@ -87,7 +87,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "6.0.0"
+assert_contains "shows version" "$result" "6.1.0"
 
 echo ""
 echo "[Help]"
@@ -99,6 +99,7 @@ assert_contains "help mentions cost" "$result" "cost"
 assert_contains "help mentions duration" "$result" "duration"
 assert_contains "help mentions Chrome" "$result" "Chrome"
 assert_contains "help mentions native rate_limits" "$result" "native"
+assert_contains "help mentions effort" "$result" "effort"
 
 echo ""
 echo "[parse_used_percentage]"
@@ -123,6 +124,63 @@ assert_equals "parses model name" "$result" "Opus"
 
 result=$(run_func "parse_model_name '{\"model\":{}}'")
 assert_equals "defaults to ? when missing" "$result" "?"
+
+echo ""
+echo "[parse_effort_level]"
+
+result=$(run_func "parse_effort_level '{\"effort\":{\"level\":\"xhigh\"}}'")
+assert_equals "parses effort level" "$result" "xhigh"
+
+result=$(run_func "parse_effort_level '{\"effort\":{}}'")
+assert_equals "empty when level missing" "$result" ""
+
+result=$(run_func "parse_effort_level '{\"model\":{\"display_name\":\"Opus\"}}'")
+assert_equals "empty when effort missing" "$result" ""
+
+echo ""
+echo "[parse_thinking_enabled]"
+
+result=$(run_func "parse_thinking_enabled '{\"thinking\":{\"enabled\":true}}'")
+assert_equals "true yields flag" "$result" "1"
+
+result=$(run_func "parse_thinking_enabled '{\"thinking\":{\"enabled\":false}}'")
+assert_equals "false yields empty" "$result" ""
+
+result=$(run_func "parse_thinking_enabled '{\"model\":{\"display_name\":\"Opus\"}}'")
+assert_equals "empty when thinking missing" "$result" ""
+
+echo ""
+echo "[get_color_by_effort_level]"
+
+result=$(run_func "get_color_by_effort_level low")
+assert_contains "low is gray" "$result" "90m"
+
+result=$(run_func "get_color_by_effort_level medium")
+assert_contains "medium is gray" "$result" "90m"
+
+result=$(run_func "get_color_by_effort_level high")
+assert_contains "high is cyan" "$result" "36m"
+
+result=$(run_func "get_color_by_effort_level xhigh")
+assert_contains "xhigh is yellow" "$result" "33m"
+
+result=$(run_func "get_color_by_effort_level max")
+assert_contains "max is yellow" "$result" "33m"
+
+result=$(run_func "get_color_by_effort_level unknown")
+assert_contains "unknown level is gray" "$result" "90m"
+
+echo ""
+echo "[format_effort_part]"
+
+result=$(run_func "format_effort_part xhigh 1" | strip_colors)
+assert_equals "thinking on shows icon and level" "$result" "✻xhigh"
+
+result=$(run_func "format_effort_part xhigh ''" | strip_colors)
+assert_equals "thinking off shows level only" "$result" "xhigh"
+
+result=$(run_func "format_effort_part '' 1" | strip_colors)
+assert_equals "no level yields empty" "$result" ""
 
 echo ""
 echo "[parse_cost]"
@@ -312,6 +370,15 @@ assert_contains "both flags show fable" "$output_both" "Fable: 7%"
 
 output_fable_missing=$(STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
 assert_contains "fable without data shows ?" "$output_fable_missing" "Fable: ?"
+
+output_effort=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' '' '' xhigh 1" | strip_colors)
+assert_contains "effort follows model name" "$output_effort" "Opus ✻xhigh │"
+
+output_no_thinking=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' '' '' medium ''" | strip_colors)
+assert_contains "effort without thinking icon" "$output_no_thinking" "Opus medium │"
+
+output_no_effort=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
+assert_contains "no effort keeps model followed by separator" "$output_no_effort" "Opus │"
 
 echo ""
 echo "[format_output error state]"
@@ -539,7 +606,7 @@ echo "[Integration — Chrome]"
 INT_CACHE="/tmp/claude-statusline-test-int-$$"
 echo "{\"five_hour\":{\"utilization\":12.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":45.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":8.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$INT_CACHE"
 
-full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
+full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"effort":{"level":"high"},"thinking":{"enabled":true},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "
         STATUSLINE_SHOW_SONNET=1
         source '$TEST_SCRIPT'
@@ -553,6 +620,7 @@ full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_n
     " | strip_colors)
 
 assert_contains "has model" "$full_output" "Sonnet"
+assert_contains "has effort from stdin" "$full_output" "Sonnet ✻high"
 assert_contains "has context" "$full_output" "55%"
 assert_contains "has 5h" "$full_output" "5h: 12%"
 assert_contains "has timer icon" "$full_output" "◑"
@@ -617,6 +685,9 @@ assert_contains "test shows sonnet" "$test_output" "Sonnet:"
 assert_contains "test shows cost" "$test_output" '$0.42'
 assert_contains "test shows time" "$test_output" "Time:"
 assert_contains "test shows error state" "$test_output" "open claude.ai"
+assert_contains "test shows effort levels" "$test_output" "Opus ✻low"
+assert_contains "test shows max effort" "$test_output" "Opus ✻max"
+assert_contains "test shows thinking disabled" "$test_output" "Opus medium"
 
 rm -f "$TEST_SCRIPT" "$TEST_CHROME" "$TEST_NATIVE"
 

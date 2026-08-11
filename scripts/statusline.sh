@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="6.0.0"
+readonly VERSION="6.1.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -16,6 +16,8 @@ readonly BAR_WIDTH=15
 readonly BAR_FILLED="█"
 readonly BAR_EMPTY="░"
 
+readonly THINKING_ICON="✻"
+
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 readonly SHOW_SONNET="${STATUSLINE_SHOW_SONNET:-0}"
@@ -26,7 +28,11 @@ show_help() {
 Usage: $SCRIPT_NAME [OPTIONS]
 
 Claude Code status line with context bar, model, usage limits, cost, and session time.
-Shows context usage, current model, 5-hour and weekly limits, session cost and duration.
+Shows context usage, current model with thinking effort level, 5-hour and weekly limits,
+session cost and duration.
+
+Effort level comes from stdin (.effort.level): low, medium, high, xhigh, max.
+Prefixed with $THINKING_ICON while thinking is enabled (.thinking.enabled).
 
 Uses native rate_limits from Claude Code stdin (v2.1.80+).
 Falls back to Chrome AppleScript if rate_limits not available.
@@ -194,6 +200,41 @@ parse_model_name() {
     echo "$input" | jq -r '.model.display_name // "?"'
 }
 
+parse_effort_level() {
+    local input=$1
+    echo "$input" | jq -r '.effort.level // empty'
+}
+
+parse_thinking_enabled() {
+    local input=$1
+    echo "$input" | jq -r 'if .thinking.enabled then "1" else "" end'
+}
+
+get_color_by_effort_level() {
+    local level=$1
+
+    case "$level" in
+        xhigh|max) echo "$COLOR_YELLOW" ;;
+        high)      echo "$COLOR_CYAN" ;;
+        *)         echo "$COLOR_GRAY" ;;
+    esac
+}
+
+format_effort_part() {
+    local level=$1
+    local thinking_enabled=${2:-}
+
+    [[ -z "$level" ]] && return
+
+    local color
+    color=$(get_color_by_effort_level "$level")
+
+    local icon=""
+    [[ -n "$thinking_enabled" ]] && icon="$THINKING_ICON"
+
+    echo -e "${color}${icon}${level}${COLOR_RESET}"
+}
+
 parse_cost() {
     local input=$1
     echo "$input" | jq -r '.cost.total_cost_usd // 0'
@@ -320,6 +361,8 @@ format_output() {
     local error_msg=${11:-}
     local fable=${12:-}
     local fable_reset=${13:-}
+    local effort_level=${14:-}
+    local thinking_enabled=${15:-}
 
     local used_color
     local used_bar
@@ -328,6 +371,11 @@ format_output() {
 
     local context_part="${COLOR_GRAY}Context:${COLOR_RESET} ${used_bar} ${used_color}${used}%${COLOR_RESET}"
     local model_part="${COLOR_CYAN}${model}${COLOR_RESET}"
+
+    local effort_str
+    effort_str=$(format_effort_part "$effort_level" "$thinking_enabled")
+    [[ -n "$effort_str" ]] && model_part="${model_part} ${effort_str}"
+
     local five_hour_part
     local seven_day_part
     five_hour_part=$(format_usage_part "5h" "$five_hour" "$five_hour_reset" "18000")
@@ -366,13 +414,21 @@ run_test() {
     reset_5d=$(date -r $((now_epoch + 432000)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
 
     echo "Low usage (45%), short session:"
-    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d"
+    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d" "xhigh" "1"
     echo ""
     echo "Medium usage (70%), longer session:"
-    format_output "70" "Sonnet" "50" "60" "20" "$reset_2h" "$reset_6d" "$reset_5d" "2.15" "1800000" "" "40" "$reset_5d"
+    format_output "70" "Sonnet" "50" "60" "20" "$reset_2h" "$reset_6d" "$reset_5d" "2.15" "1800000" "" "40" "$reset_5d" "high" "1"
     echo ""
     echo "High usage (85%), expensive session:"
-    format_output "85" "Opus" "80" "90" "65" "$reset_2h" "$reset_6d" "$reset_5d" "8.73" "7200000" "" "88" "$reset_5d"
+    format_output "85" "Opus" "80" "90" "65" "$reset_2h" "$reset_6d" "$reset_5d" "8.73" "7200000" "" "88" "$reset_5d" "max" "1"
+    echo ""
+    echo "Effort levels:"
+    for level in low medium high xhigh max; do
+        format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d" "$level" "1"
+    done
+    echo ""
+    echo "Thinking disabled:"
+    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d" "medium" ""
     echo ""
     echo "No limits data:"
     format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000"
@@ -396,11 +452,15 @@ main() {
     local sonnet_reset
     local fable
     local fable_reset
+    local effort_level
+    local thinking_enabled
     local rest
 
     input=$(cat)
     used=$(parse_used_percentage "$input")
     model=$(parse_model_name "$input")
+    effort_level=$(parse_effort_level "$input")
+    thinking_enabled=$(parse_thinking_enabled "$input")
     cost=$(parse_cost "$input")
     duration_ms=$(parse_duration "$input")
 
@@ -426,7 +486,7 @@ main() {
     fable="${rest%%|*}"
     fable_reset="${rest#*|}"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg" "$fable" "$fable_reset"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg" "$fable" "$fable_reset" "$effort_level" "$thinking_enabled"
 }
 
 case "${1:-}" in
