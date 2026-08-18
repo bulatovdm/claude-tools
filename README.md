@@ -26,7 +26,13 @@ Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) →
 
 All indicators are color-coded: green (<60%), yellow (60-90%), red (90%+). The effort level has its own scale: `low`/`medium` gray, `high` cyan, `xhigh`/`max` yellow.
 
-Effort and thinking state come from the statusline stdin JSON (`.effort.level` and `.thinking.enabled`). Unlike model and context window, they are not frozen at session start — both are re-read on every render. On Claude Code versions that don't send these fields, the effort indicator is simply omitted.
+Effort and thinking state come from the statusline stdin JSON (`.effort.level` and `.thinking.enabled`). Both are re-read on every render, so switching effort mid-session updates the indicator immediately. Unlike model and context window, they are not frozen at session start.
+
+Each observed value is cached per session in `/tmp/claude-effort-${session_id}` and `/tmp/claude-thinking-${session_id}`. When a render arrives without these fields, the last value seen *in that same session* is shown instead — so the indicator never falls back to a level left over from a different session. A `false` value for `.thinking.enabled` is cached as an explicit "off" and is not confused with a missing field.
+
+**Resumed sessions.** On resume Claude Code does not restore the session's own effort — it replays the global `effortLevel` from `~/.claude/settings.json`. A session started at `xhigh` would therefore report `high`. To correct this, the effort level is read from the session transcript (`~/.claude/projects/*/${session_id}.jsonl`, or `.transcript_path` from stdin when present), which records the actual `"effort"` on every assistant entry. The previous stdin value is tracked in `/tmp/claude-effort-stdin-${session_id}`: when stdin *changes*, you just switched effort and it wins; when it stays the same, it is treated as the replayed default and the transcript wins.
+
+Thinking state is **not** restored. Claude Code stores it only as the global `alwaysThinkingEnabled` flag — nothing on disk records it per session. The presence of `"type":"thinking"` blocks in a transcript is not a substitute: those blocks appear at every effort level and only in a fraction of responses, so a short session with thinking on leaves no trace at all. The indicator therefore reports what stdin says, which after a resume is the global default rather than the session's own state.
 
 ### Configuration
 

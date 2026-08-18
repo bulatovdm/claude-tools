@@ -33,6 +33,11 @@ session cost and duration.
 
 Effort level comes from stdin (.effort.level): low, medium, high, xhigh, max.
 Prefixed with $THINKING_ICON while thinking is enabled (.thinking.enabled).
+Both values are cached per session; if a render omits them, the last value
+seen in that same session is reused instead of another session's leftover.
+On resume Claude Code replays the global effort default, so the level is taken
+from the session transcript (.effort) unless stdin reports an actual change.
+Thinking state is not recorded per session anywhere, so it is never restored.
 
 Uses native rate_limits from Claude Code stdin (v2.1.80+).
 Falls back to Chrome AppleScript if rate_limits not available.
@@ -200,14 +205,130 @@ parse_model_name() {
     echo "$input" | jq -r '.model.display_name // "?"'
 }
 
+read_session_cache() {
+    local session_id=$1
+    local kind=$2
+
+    [[ -z "$session_id" ]] && return 0
+    local cache_file="/tmp/claude-${kind}-${session_id}"
+    if [[ -f "$cache_file" ]]; then
+        cat "$cache_file"
+    fi
+}
+
+write_session_cache() {
+    local session_id=$1
+    local kind=$2
+    local value=$3
+
+    [[ -z "$session_id" ]] && return 0
+    echo "$value" > "/tmp/claude-${kind}-${session_id}"
+}
+
+find_session_transcript() {
+    local input=$1
+    local session_id=$2
+
+    [[ -z "$session_id" ]] && return 0
+
+    local transcript
+    transcript=$(echo "$input" | jq -r '.transcript_path // empty')
+    if [[ -n "$transcript" && -f "$transcript" ]]; then
+        echo "$transcript"
+        return 0
+    fi
+
+    local projects_dir="$HOME/.claude/projects"
+    [[ -d "$projects_dir" ]] || return 0
+
+    local match
+    match=$(find "$projects_dir" -maxdepth 2 -name "${session_id}.jsonl" -type f 2>/dev/null | head -1)
+    [[ -n "$match" ]] && echo "$match"
+    return 0
+}
+
+read_effort_from_transcript() {
+    local transcript=$1
+
+    [[ -f "$transcript" ]] || return 0
+
+    grep -o '"effort":"[a-z]*"' "$transcript" 2>/dev/null \
+        | tail -1 \
+        | sed 's/.*:"//; s/"$//'
+    return 0
+}
+
 parse_effort_level() {
     local input=$1
-    echo "$input" | jq -r '.effort.level // empty'
+    local session_id
+    session_id=$(echo "$input" | jq -r '.session_id // empty')
+
+    local level
+    level=$(echo "$input" | jq -r '.effort.level // empty')
+
+    local transcript
+    transcript=$(find_session_transcript "$input" "$session_id")
+
+    local from_transcript=""
+    [[ -n "$transcript" ]] && from_transcript=$(read_effort_from_transcript "$transcript")
+
+    if [[ -n "$level" ]]; then
+        local previous_stdin
+        previous_stdin=$(read_session_cache "$session_id" "effort-stdin")
+        write_session_cache "$session_id" "effort-stdin" "$level"
+
+        # A changed stdin value means the user just switched effort — trust it.
+        # An unchanged one may be the global default replayed on resume, so the
+        # transcript (which records what this session actually ran with) wins.
+        if [[ -n "$previous_stdin" && "$level" != "$previous_stdin" ]] || [[ -z "$from_transcript" ]]; then
+            write_session_cache "$session_id" "effort" "$level"
+            echo "$level"
+            return 0
+        fi
+
+        write_session_cache "$session_id" "effort" "$from_transcript"
+        echo "$from_transcript"
+        return 0
+    fi
+
+    local cached
+    cached=$(read_session_cache "$session_id" "effort")
+    if [[ -n "$cached" ]]; then
+        echo "$cached"
+        return 0
+    fi
+
+    if [[ -n "$from_transcript" ]]; then
+        write_session_cache "$session_id" "effort" "$from_transcript"
+        echo "$from_transcript"
+    fi
+    return 0
 }
 
 parse_thinking_enabled() {
     local input=$1
-    echo "$input" | jq -r 'if .thinking.enabled then "1" else "" end'
+    local session_id
+    session_id=$(echo "$input" | jq -r '.session_id // empty')
+
+    local enabled
+    enabled=$(echo "$input" | jq -r '
+        if (.thinking | type) == "object" and (.thinking.enabled | type) == "boolean"
+        then (if .thinking.enabled then "1" else "0" end)
+        else "" end
+    ')
+
+    # Unlike effort, thinking state is not recorded per session anywhere on disk,
+    # so there is nothing to restore it from on resume. Report only what stdin
+    # says, falling back to the last value seen in this same session.
+    if [[ -n "$enabled" ]]; then
+        write_session_cache "$session_id" "thinking" "$enabled"
+    else
+        enabled=$(read_session_cache "$session_id" "thinking")
+    fi
+
+    if [[ "$enabled" == "1" ]]; then
+        echo "1"
+    fi
 }
 
 get_color_by_effort_level() {

@@ -150,6 +150,89 @@ result=$(run_func "parse_thinking_enabled '{\"model\":{\"display_name\":\"Opus\"
 assert_equals "empty when thinking missing" "$result" ""
 
 echo ""
+echo "[session-scoped effort/thinking cache]"
+
+CACHE_SESSION="test-effort-$$"
+rm -f "/tmp/claude-effort-${CACHE_SESSION}" "/tmp/claude-thinking-${CACHE_SESSION}"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"$CACHE_SESSION\",\"effort\":{\"level\":\"max\"}}'")
+assert_equals "caches effort for session" "$result" "max"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"$CACHE_SESSION\"}'")
+assert_equals "falls back to cached effort" "$result" "max"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"$CACHE_SESSION\",\"effort\":{\"level\":\"low\"}}'")
+assert_equals "effort change overrides cache" "$result" "low"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"$CACHE_SESSION\"}'")
+assert_equals "cache holds newest effort" "$result" "low"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"other-$$\"}'")
+assert_equals "other session unaffected" "$result" ""
+
+result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$CACHE_SESSION\",\"thinking\":{\"enabled\":true}}'")
+assert_equals "caches thinking on" "$result" "1"
+
+result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$CACHE_SESSION\"}'")
+assert_equals "falls back to cached thinking on" "$result" "1"
+
+result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$CACHE_SESSION\",\"thinking\":{\"enabled\":false}}'")
+assert_equals "thinking off overrides cache" "$result" ""
+
+result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$CACHE_SESSION\"}'")
+assert_equals "cached thinking off stays off" "$result" ""
+
+rm -f "/tmp/claude-effort-${CACHE_SESSION}" "/tmp/claude-thinking-${CACHE_SESSION}" "/tmp/claude-effort-other-$$" "/tmp/claude-thinking-other-$$"
+
+echo ""
+echo "[restore effort from transcript]"
+
+TRANSCRIPT_SESSION="test-transcript-$$"
+TRANSCRIPT_FILE=$(mktemp)
+rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-thinking-${TRANSCRIPT_SESSION}"
+
+printf '%s\n' \
+    '{"type":"assistant","effort":"medium","message":{"content":[{"type":"text"}]}}' \
+    '{"type":"assistant","effort":"xhigh","message":{"content":[{"type":"thinking"}]}}' \
+    > "$TRANSCRIPT_FILE"
+
+result=$(run_func "read_effort_from_transcript '$TRANSCRIPT_FILE'")
+assert_equals "reads newest effort from transcript" "$result" "xhigh"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\"}'")
+assert_equals "restores effort on resume" "$result" "xhigh"
+
+rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-effort-stdin-${TRANSCRIPT_SESSION}"
+result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"effort\":{\"level\":\"high\"}}'")
+assert_equals "transcript beats replayed stdin default" "$result" "xhigh"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"effort\":{\"level\":\"high\"}}'")
+assert_equals "unchanged stdin keeps transcript value" "$result" "xhigh"
+
+result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"effort\":{\"level\":\"low\"}}'")
+assert_equals "changed stdin wins over transcript" "$result" "low"
+
+rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-effort-stdin-${TRANSCRIPT_SESSION}"
+result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"effort\":{\"level\":\"low\"}}'")
+assert_equals "stdin used when no transcript" "$result" "low"
+
+THINK_SESSION="test-think-$$"
+rm -f "/tmp/claude-thinking-${THINK_SESSION}" "/tmp/claude-thinking-stdin-${THINK_SESSION}"
+result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$THINK_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"thinking\":{\"enabled\":false}}'")
+assert_equals "thinking never restored from transcript" "$result" ""
+
+rm -f "/tmp/claude-thinking-${THINK_SESSION}" "/tmp/claude-thinking-stdin-${THINK_SESSION}"
+result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$THINK_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\"}'")
+assert_equals "no thinking field yields empty despite transcript" "$result" ""
+
+rm -f "/tmp/claude-thinking-${THINK_SESSION}" "/tmp/claude-thinking-stdin-${THINK_SESSION}"
+
+result=$(run_func "read_effort_from_transcript '/nonexistent/transcript.jsonl'")
+assert_equals "missing transcript yields empty" "$result" ""
+
+rm -f "$TRANSCRIPT_FILE" "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-thinking-${TRANSCRIPT_SESSION}"
+
+echo ""
 echo "[get_color_by_effort_level]"
 
 result=$(run_func "get_color_by_effort_level low")
