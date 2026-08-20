@@ -163,22 +163,32 @@ install_alias() {
         return 0
     fi
 
-    local alias_line="alias cs='~/.claude/session.sh'"
+    add_alias_line "$shell_rc" "cs" "alias cs='~/.claude/session.sh'" "Claude Code session picker"
+    # New sessions pinned to a fixed effort level, so leftovers written to the
+    # global settings.json by other sessions never leak into a fresh start
+    add_alias_line "$shell_rc" "cn" "alias cn='claude --effort ${CLAUDE_NEW_SESSION_EFFORT:-high}'" "Claude Code new session with pinned effort"
+}
+
+add_alias_line() {
+    local shell_rc=$1
+    local alias_name=$2
+    local alias_line=$3
+    local comment=$4
 
     if grep -qF "$alias_line" "$shell_rc" 2>/dev/null; then
-        log_success "Alias 'cs' already configured in $shell_rc"
+        log_success "Alias '$alias_name' already configured in $shell_rc"
         return 0
     fi
 
-    if grep -q "alias cs=" "$shell_rc" 2>/dev/null; then
-        log_warning "Alias 'cs' already exists in $shell_rc with different value — skipping"
+    if grep -q "alias ${alias_name}=" "$shell_rc" 2>/dev/null; then
+        log_warning "Alias '$alias_name' already exists in $shell_rc with different value — skipping"
         return 0
     fi
 
     echo "" >> "$shell_rc"
-    echo "# Claude Code session picker" >> "$shell_rc"
+    echo "# $comment" >> "$shell_rc"
     echo "$alias_line" >> "$shell_rc"
-    log_success "Added alias 'cs' to $shell_rc (restart shell or: source $shell_rc)"
+    log_success "Added alias '$alias_name' to $shell_rc (restart shell or: source $shell_rc)"
 }
 
 install_git_hooks() {
