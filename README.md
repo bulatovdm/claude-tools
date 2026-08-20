@@ -81,7 +81,7 @@ cs --list             # non-interactive list (no picker)
 cs -p /path/to/repo   # sessions for a specific project
 ```
 
-Reads `~/.claude/history.jsonl`, groups prompts by session, shows date/duration/message count/preview. Select a session by number → launches `claude --resume <session-id>`.
+Reads `~/.claude/history.jsonl`, groups prompts by session, shows date/duration/message count/preview. Select a session by number → resumes it with the session's own effort level (`claude --effort <level> --resume <session-id>`).
 
 Before launching, reads the session's own effort level from its transcript and passes it via `claude --effort` (session-scoped, the global settings stay untouched); thinking state is restored into `~/.claude/settings.json` as best-effort. See [Effort leaks between sessions](#status-line) above. For new sessions, the `cn` alias (`claude --effort high`) gives every fresh start a known level.
 
@@ -153,11 +153,14 @@ cd claude-tools
 ```
 
 The installer will:
-1. Install the status line script to `~/.claude/`
-2. Install git hooks to `~/.git-hooks/` and set global `core.hooksPath`
-3. Configure `settings.json`
-4. Open Chrome with claude.ai if needed
-5. Check that "Allow JavaScript from Apple Events" is enabled
+1. Install the status line script (with usage modules) to `~/.claude/`
+2. Install the session picker to `~/.claude/session.sh` and add shell aliases: `cs` (picker) and `cn` (new session with pinned effort)
+3. Install the `save-model.sh` SessionStart hook and register it in `settings.json`
+4. Install git hooks to `~/.git-hooks/` and set global `core.hooksPath`
+5. Configure the status line in `settings.json`
+6. Open Chrome with claude.ai if needed and check that "Allow JavaScript from Apple Events" is enabled
+
+The default effort level for the `cn` alias is `high`; set `CLAUDE_NEW_SESSION_EFFORT` when running the installer to pick another (e.g. `CLAUDE_NEW_SESSION_EFFORT=xhigh ./install.sh`).
 
 ### Manual Install
 
