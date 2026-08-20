@@ -35,9 +35,10 @@ Effort level comes from stdin (.effort.level): low, medium, high, xhigh, max.
 Prefixed with $THINKING_ICON while thinking is enabled (.thinking.enabled).
 Both values are cached per session; if a render omits them, the last value
 seen in that same session is reused instead of another session's leftover.
-On resume Claude Code replays the global effort default, so the level is taken
-from the session transcript (.effort) unless stdin reports an actual change.
-Thinking state is not recorded per session anywhere, so it is never restored.
+Stdin always wins: it reports what Claude Code will actually use. On resume,
+session.sh (cs) restores the session's own effort/thinking into settings.json
+before launch, so stdin stays truthful. The transcript is only a fallback for
+Claude Code versions that don't send the effort field at all.
 
 Uses native rate_limits from Claude Code stdin (v2.1.80+).
 Falls back to Chrome AppleScript if rate_limits not available.
@@ -266,28 +267,13 @@ parse_effort_level() {
     local level
     level=$(echo "$input" | jq -r '.effort.level // empty')
 
-    local transcript
-    transcript=$(find_session_transcript "$input" "$session_id")
-
-    local from_transcript=""
-    [[ -n "$transcript" ]] && from_transcript=$(read_effort_from_transcript "$transcript")
-
+    # Stdin reports what Claude Code will actually use for the next prompt, so
+    # it always wins — session.sh restores the session's own state into
+    # settings.json before resume, keeping stdin truthful. The transcript is
+    # only a last resort for versions that don't send the field at all.
     if [[ -n "$level" ]]; then
-        local previous_stdin
-        previous_stdin=$(read_session_cache "$session_id" "effort-stdin")
-        write_session_cache "$session_id" "effort-stdin" "$level"
-
-        # A changed stdin value means the user just switched effort — trust it.
-        # An unchanged one may be the global default replayed on resume, so the
-        # transcript (which records what this session actually ran with) wins.
-        if [[ -n "$previous_stdin" && "$level" != "$previous_stdin" ]] || [[ -z "$from_transcript" ]]; then
-            write_session_cache "$session_id" "effort" "$level"
-            echo "$level"
-            return 0
-        fi
-
-        write_session_cache "$session_id" "effort" "$from_transcript"
-        echo "$from_transcript"
+        write_session_cache "$session_id" "effort" "$level"
+        echo "$level"
         return 0
     fi
 
@@ -297,6 +283,12 @@ parse_effort_level() {
         echo "$cached"
         return 0
     fi
+
+    local transcript
+    transcript=$(find_session_transcript "$input" "$session_id")
+
+    local from_transcript=""
+    [[ -n "$transcript" ]] && from_transcript=$(read_effort_from_transcript "$transcript")
 
     if [[ -n "$from_transcript" ]]; then
         write_session_cache "$session_id" "effort" "$from_transcript"

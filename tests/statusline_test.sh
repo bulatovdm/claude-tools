@@ -202,17 +202,17 @@ assert_equals "reads newest effort from transcript" "$result" "xhigh"
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\"}'")
 assert_equals "restores effort on resume" "$result" "xhigh"
 
-rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-effort-stdin-${TRANSCRIPT_SESSION}"
+rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}"
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"effort\":{\"level\":\"high\"}}'")
-assert_equals "transcript beats replayed stdin default" "$result" "xhigh"
-
-result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"effort\":{\"level\":\"high\"}}'")
-assert_equals "unchanged stdin keeps transcript value" "$result" "xhigh"
+assert_equals "stdin always beats transcript" "$result" "high"
 
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"effort\":{\"level\":\"low\"}}'")
-assert_equals "changed stdin wins over transcript" "$result" "low"
+assert_equals "stdin change reflected immediately" "$result" "low"
 
-rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-effort-stdin-${TRANSCRIPT_SESSION}"
+result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\"}'")
+assert_equals "cache beats transcript when stdin missing" "$result" "low"
+
+rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}"
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"effort\":{\"level\":\"low\"}}'")
 assert_equals "stdin used when no transcript" "$result" "low"
 

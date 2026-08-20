@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
 readonly HISTORY_FILE="$HOME/.claude/history.jsonl"
 readonly PROJECTS_DIR="$HOME/.claude/projects"
 
@@ -49,6 +49,56 @@ show_version() {
 die() {
     echo -e "${COLOR_RED}Error:${COLOR_RESET} $1" >&2
     exit 1
+}
+
+# Claude Code does not restore a session's own effort/thinking on resume — it
+# replays the global values from settings.json, written by whichever session
+# ran last. Put the resumed session's own state back before launching, so the
+# first prompt actually runs with what the session was using.
+restore_session_state() {
+    local sid=$1
+    local settings_file="$HOME/.claude/settings.json"
+
+    [[ -f "$settings_file" ]] || return 0
+
+    local transcript
+    transcript=$(find "$PROJECTS_DIR" -maxdepth 2 -name "${sid}.jsonl" -type f 2>/dev/null | head -1) || true
+
+    local effort=""
+    if [[ -n "$transcript" ]]; then
+        effort=$(grep -o '"effort":"[a-z]*"' "$transcript" 2>/dev/null | tail -1 | sed 's/.*:"//; s/"$//') || true
+    fi
+
+    # Thinking is not recorded in transcripts; the statusline caches the last
+    # observed state per session. Best-effort: the cache lives in /tmp.
+    local thinking=""
+    local thinking_cache="/tmp/claude-thinking-${sid}"
+    [[ -f "$thinking_cache" ]] && thinking=$(cat "$thinking_cache")
+
+    [[ -z "$effort" && -z "$thinking" ]] && return 0
+
+    local updated
+    updated=$(jq \
+        --arg effort "$effort" \
+        --arg thinking "$thinking" \
+        '(if $effort != "" then .effortLevel = $effort else . end)
+         | (if $thinking != "" then .alwaysThinkingEnabled = ($thinking == "1") else . end)' \
+        "$settings_file" 2>/dev/null) || return 0
+    [[ -z "$updated" ]] && return 0
+
+    local tmp
+    tmp=$(mktemp) || return 0
+    echo "$updated" > "$tmp" && mv "$tmp" "$settings_file"
+
+    local restored=""
+    [[ -n "$effort" ]] && restored="effort: $effort"
+    if [[ -n "$thinking" ]]; then
+        local thinking_label="off"
+        [[ "$thinking" == "1" ]] && thinking_label="on"
+        [[ -n "$restored" ]] && restored+=", "
+        restored+="thinking: $thinking_label"
+    fi
+    echo -e "${COLOR_DIM}Restored session state (${restored})${COLOR_RESET}"
 }
 
 check_requirements() {
@@ -363,6 +413,7 @@ pick_with_fzf() {
 
     if [[ -n "$sid" ]]; then
         echo -e "${COLOR_GREEN}Resuming session:${COLOR_RESET} ${COLOR_DIM}$sid${COLOR_RESET}"
+        restore_session_state "$sid"
         exec claude --resume "$sid"
     fi
 }
@@ -407,6 +458,7 @@ pick_with_select() {
     local sid="${SESSION_IDS[$idx]}"
 
     echo -e "${COLOR_GREEN}Resuming session:${COLOR_RESET} ${COLOR_DIM}$sid${COLOR_RESET}"
+    restore_session_state "$sid"
     exec claude --resume "$sid"
 }
 

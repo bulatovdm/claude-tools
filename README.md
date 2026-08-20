@@ -30,9 +30,9 @@ Effort and thinking state come from the statusline stdin JSON (`.effort.level` a
 
 Each observed value is cached per session in `/tmp/claude-effort-${session_id}` and `/tmp/claude-thinking-${session_id}`. When a render arrives without these fields, the last value seen *in that same session* is shown instead — so the indicator never falls back to a level left over from a different session. A `false` value for `.thinking.enabled` is cached as an explicit "off" and is not confused with a missing field.
 
-**Resumed sessions.** On resume Claude Code does not restore the session's own effort — it replays the global `effortLevel` from `~/.claude/settings.json`. A session started at `xhigh` would therefore report `high`. To correct this, the effort level is read from the session transcript (`~/.claude/projects/*/${session_id}.jsonl`, or `.transcript_path` from stdin when present), which records the actual `"effort"` on every assistant entry. The previous stdin value is tracked in `/tmp/claude-effort-stdin-${session_id}`: when stdin *changes*, you just switched effort and it wins; when it stays the same, it is treated as the replayed default and the transcript wins.
+**Resumed sessions.** On resume Claude Code does not restore the session's own effort or thinking — it replays the global `effortLevel` / `alwaysThinkingEnabled` from `~/.claude/settings.json`, written by whichever session ran last. Masking this in the statusline alone would be misleading: the display would show the session's old level while prompts actually run with the global one. So the fix lives in the launcher instead — before `claude --resume`, the session picker (`cs`) writes the session's own state back into `settings.json`: effort is read from the session transcript (`~/.claude/projects/*/${session_id}.jsonl`, which records the actual `"effort"` on every assistant entry), thinking from the statusline's `/tmp/claude-thinking-${session_id}` cache (best-effort — `/tmp` does not survive a reboot; transcripts record nothing about thinking). The statusline then simply trusts stdin, which is what Claude Code will actually use. The transcript remains a display fallback only for Claude Code versions that don't send the effort field at all.
 
-Thinking state is **not** restored. Claude Code stores it only as the global `alwaysThinkingEnabled` flag — nothing on disk records it per session. The presence of `"type":"thinking"` blocks in a transcript is not a substitute: those blocks appear at every effort level and only in a fraction of responses, so a short session with thinking on leaves no trace at all. The indicator therefore reports what stdin says, which after a resume is the global default rather than the session's own state.
+Sessions resumed directly via `claude --resume`/`claude -c` (bypassing `cs`) keep the global values — the indicator still tells the truth about what will run, it just isn't the session's historical level.
 
 ### Configuration
 
@@ -75,6 +75,8 @@ cs -p /path/to/repo   # sessions for a specific project
 ```
 
 Reads `~/.claude/history.jsonl`, groups prompts by session, shows date/duration/message count/preview. Select a session by number → launches `claude --resume <session-id>`.
+
+Before launching, restores the session's own effort level and thinking state into `~/.claude/settings.json` (see [Resumed sessions](#status-line) above) — otherwise the resumed session would silently run with whatever the last active session left in the global settings.
 
 If `fzf` is installed, uses fuzzy finder for selection. Otherwise falls back to a numbered list.
 
