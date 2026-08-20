@@ -28,7 +28,7 @@ All indicators are color-coded: green (<60%), yellow (60-90%), red (90%+). The e
 
 Effort and thinking state come from the statusline stdin JSON (`.effort.level` and `.thinking.enabled`). Both are re-read on every render, so switching effort mid-session updates the indicator immediately. Unlike model and context window, they are not frozen at session start.
 
-Each observed value is cached per session in `/tmp/claude-effort-${session_id}` and `/tmp/claude-thinking-${session_id}`. When a render arrives without these fields, the last value seen *in that same session* is shown instead — so the indicator never falls back to a level left over from a different session. A `false` value for `.thinking.enabled` is cached as an explicit "off" and is not confused with a missing field.
+Each observed value is cached per session in `~/.claude/statusline-cache/` (`effort-${session_id}`, `thinking-${session_id}`; durable across reboots, pruned by `cs` after 30 days of inactivity). When a render arrives without these fields, the last value seen *in that same session* is shown instead — so the indicator never falls back to a level left over from a different session. A `false` value for `.thinking.enabled` is cached as an explicit "off" and is not confused with a missing field.
 
 **Effort leaks between sessions.** Claude Code stores `effortLevel` and `alwaysThinkingEnabled` globally in `~/.claude/settings.json`; switching effort with `/effort` writes there immediately (except `max`, which is session-only). Running sessions hold their level in memory and are unaffected — the leak hits **new and resumed launches**, which read whatever the last session left behind. Claude Code does not restore a session's own effort on `--resume`, and per-session persistence is not supported natively.
 
@@ -37,7 +37,7 @@ The fix lives in the launchers, using the session-scoped `--effort` flag (which 
 - **Resume**: the session picker (`cs`) reads the session's actual level from its transcript (`~/.claude/projects/*/${session_id}.jsonl` records `"effort"` on every assistant entry) and launches `claude --effort <level> --resume <id>`.
 - **New sessions**: the `cn` alias launches `claude --effort high`, so a fresh session always starts at a known level regardless of what other sessions wrote to the global settings.
 
-Thinking has no launch flag or environment variable, so its only handle is the global `alwaysThinkingEnabled`: `cs` restores it from the statusline's `/tmp/claude-thinking-${session_id}` cache (best-effort — `/tmp` does not survive a reboot; transcripts record nothing about thinking).
+Thinking has no launch flag or environment variable, so its only handle is the global `alwaysThinkingEnabled`: `cs` restores it from the statusline's `~/.claude/statusline-cache/thinking-${session_id}` cache (transcripts record nothing about thinking, so this cache is the only per-session record of it; sessions that never rendered the statusline have nothing to restore from).
 
 The statusline simply trusts stdin, which reports what Claude Code will actually use. The transcript remains a display fallback only for Claude Code versions that don't send the effort field at all. Sessions launched bare (`claude`, `claude --resume`, `claude -c`) keep the global values — the indicator still tells the truth about what will run, it just isn't the session's historical level.
 

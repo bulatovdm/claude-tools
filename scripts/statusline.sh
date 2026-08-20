@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="6.1.0"
+readonly VERSION="6.2.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -22,6 +22,10 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 readonly SHOW_SONNET="${STATUSLINE_SHOW_SONNET:-0}"
 readonly SHOW_FABLE="${STATUSLINE_SHOW_FABLE:-0}"
+
+# Durable per-session cache: /tmp is wiped on reboot, which would lose the
+# thinking state needed to restore a session (it exists nowhere else on disk)
+readonly SESSION_CACHE_DIR="${STATUSLINE_CACHE_DIR:-$HOME/.claude/statusline-cache}"
 
 show_help() {
     cat << EOF
@@ -211,10 +215,19 @@ read_session_cache() {
     local kind=$2
 
     [[ -z "$session_id" ]] && return 0
-    local cache_file="/tmp/claude-${kind}-${session_id}"
+
+    local cache_file="$SESSION_CACHE_DIR/${kind}-${session_id}"
     if [[ -f "$cache_file" ]]; then
         cat "$cache_file"
+        return 0
     fi
+
+    # Legacy location before the cache moved out of /tmp
+    local legacy_file="/tmp/claude-${kind}-${session_id}"
+    if [[ -f "$legacy_file" ]]; then
+        cat "$legacy_file"
+    fi
+    return 0
 }
 
 write_session_cache() {
@@ -223,7 +236,8 @@ write_session_cache() {
     local value=$3
 
     [[ -z "$session_id" ]] && return 0
-    echo "$value" > "/tmp/claude-${kind}-${session_id}"
+    mkdir -p "$SESSION_CACHE_DIR" 2>/dev/null || return 0
+    echo "$value" > "$SESSION_CACHE_DIR/${kind}-${session_id}"
 }
 
 find_session_transcript() {

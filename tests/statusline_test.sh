@@ -14,6 +14,7 @@ strip_colors() {
     sed 's/\x1b\[[0-9;]*m//g'
 }
 
+export STATUSLINE_CACHE_DIR=$(mktemp -d)
 TEST_SCRIPT=$(mktemp)
 TEST_CHROME=$(mktemp)
 TEST_NATIVE=$(mktemp)
@@ -87,7 +88,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "6.1.0"
+assert_contains "shows version" "$result" "6.2.0"
 
 echo ""
 echo "[Help]"
@@ -153,7 +154,7 @@ echo ""
 echo "[session-scoped effort/thinking cache]"
 
 CACHE_SESSION="test-effort-$$"
-rm -f "/tmp/claude-effort-${CACHE_SESSION}" "/tmp/claude-thinking-${CACHE_SESSION}"
+rm -f "${STATUSLINE_CACHE_DIR}/effort-${CACHE_SESSION}" "${STATUSLINE_CACHE_DIR}/thinking-${CACHE_SESSION}"
 
 result=$(run_func "parse_effort_level '{\"session_id\":\"$CACHE_SESSION\",\"effort\":{\"level\":\"max\"}}'")
 assert_equals "caches effort for session" "$result" "max"
@@ -182,14 +183,14 @@ assert_equals "thinking off overrides cache" "$result" ""
 result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$CACHE_SESSION\"}'")
 assert_equals "cached thinking off stays off" "$result" ""
 
-rm -f "/tmp/claude-effort-${CACHE_SESSION}" "/tmp/claude-thinking-${CACHE_SESSION}" "/tmp/claude-effort-other-$$" "/tmp/claude-thinking-other-$$"
+rm -f "${STATUSLINE_CACHE_DIR}/effort-${CACHE_SESSION}" "${STATUSLINE_CACHE_DIR}/thinking-${CACHE_SESSION}" "${STATUSLINE_CACHE_DIR}/effort-other-$$" "${STATUSLINE_CACHE_DIR}/thinking-other-$$"
 
 echo ""
 echo "[restore effort from transcript]"
 
 TRANSCRIPT_SESSION="test-transcript-$$"
 TRANSCRIPT_FILE=$(mktemp)
-rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-thinking-${TRANSCRIPT_SESSION}"
+rm -f "${STATUSLINE_CACHE_DIR}/effort-${TRANSCRIPT_SESSION}" "${STATUSLINE_CACHE_DIR}/thinking-${TRANSCRIPT_SESSION}"
 
 printf '%s\n' \
     '{"type":"assistant","effort":"medium","message":{"content":[{"type":"text"}]}}' \
@@ -202,7 +203,7 @@ assert_equals "reads newest effort from transcript" "$result" "xhigh"
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\"}'")
 assert_equals "restores effort on resume" "$result" "xhigh"
 
-rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}"
+rm -f "${STATUSLINE_CACHE_DIR}/effort-${TRANSCRIPT_SESSION}"
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"effort\":{\"level\":\"high\"}}'")
 assert_equals "stdin always beats transcript" "$result" "high"
 
@@ -212,25 +213,25 @@ assert_equals "stdin change reflected immediately" "$result" "low"
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\"}'")
 assert_equals "cache beats transcript when stdin missing" "$result" "low"
 
-rm -f "/tmp/claude-effort-${TRANSCRIPT_SESSION}"
+rm -f "${STATUSLINE_CACHE_DIR}/effort-${TRANSCRIPT_SESSION}"
 result=$(run_func "parse_effort_level '{\"session_id\":\"$TRANSCRIPT_SESSION\",\"effort\":{\"level\":\"low\"}}'")
 assert_equals "stdin used when no transcript" "$result" "low"
 
 THINK_SESSION="test-think-$$"
-rm -f "/tmp/claude-thinking-${THINK_SESSION}" "/tmp/claude-thinking-stdin-${THINK_SESSION}"
+rm -f "${STATUSLINE_CACHE_DIR}/thinking-${THINK_SESSION}" "${STATUSLINE_CACHE_DIR}/thinking-stdin-${THINK_SESSION}"
 result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$THINK_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\",\"thinking\":{\"enabled\":false}}'")
 assert_equals "thinking never restored from transcript" "$result" ""
 
-rm -f "/tmp/claude-thinking-${THINK_SESSION}" "/tmp/claude-thinking-stdin-${THINK_SESSION}"
+rm -f "${STATUSLINE_CACHE_DIR}/thinking-${THINK_SESSION}" "${STATUSLINE_CACHE_DIR}/thinking-stdin-${THINK_SESSION}"
 result=$(run_func "parse_thinking_enabled '{\"session_id\":\"$THINK_SESSION\",\"transcript_path\":\"$TRANSCRIPT_FILE\"}'")
 assert_equals "no thinking field yields empty despite transcript" "$result" ""
 
-rm -f "/tmp/claude-thinking-${THINK_SESSION}" "/tmp/claude-thinking-stdin-${THINK_SESSION}"
+rm -f "${STATUSLINE_CACHE_DIR}/thinking-${THINK_SESSION}" "${STATUSLINE_CACHE_DIR}/thinking-stdin-${THINK_SESSION}"
 
 result=$(run_func "read_effort_from_transcript '/nonexistent/transcript.jsonl'")
 assert_equals "missing transcript yields empty" "$result" ""
 
-rm -f "$TRANSCRIPT_FILE" "/tmp/claude-effort-${TRANSCRIPT_SESSION}" "/tmp/claude-thinking-${TRANSCRIPT_SESSION}"
+rm -f "$TRANSCRIPT_FILE" "${STATUSLINE_CACHE_DIR}/effort-${TRANSCRIPT_SESSION}" "${STATUSLINE_CACHE_DIR}/thinking-${TRANSCRIPT_SESSION}"
 
 echo ""
 echo "[get_color_by_effort_level]"

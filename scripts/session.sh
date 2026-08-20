@@ -3,9 +3,10 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 readonly HISTORY_FILE="$HOME/.claude/history.jsonl"
 readonly PROJECTS_DIR="$HOME/.claude/projects"
+readonly SESSION_CACHE_DIR="$HOME/.claude/statusline-cache"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -67,14 +68,16 @@ session_effort_level() {
 
 # Thinking has no launch flag or env var, so the only handle is the global
 # alwaysThinkingEnabled in settings.json. Restore it from the statusline's
-# per-session cache. Best-effort: the cache lives in /tmp.
+# per-session cache in ~/.claude/statusline-cache (survives reboot).
 restore_session_thinking() {
     local sid=$1
     local settings_file="$HOME/.claude/settings.json"
 
     [[ -f "$settings_file" ]] || return 0
 
-    local thinking_cache="/tmp/claude-thinking-${sid}"
+    local thinking_cache="$SESSION_CACHE_DIR/thinking-${sid}"
+    # Legacy location before the statusline cache moved out of /tmp
+    [[ -f "$thinking_cache" ]] || thinking_cache="/tmp/claude-thinking-${sid}"
     [[ -f "$thinking_cache" ]] || return 0
     local thinking
     thinking=$(cat "$thinking_cache")
@@ -117,6 +120,11 @@ check_requirements() {
     if [[ ! -f "$HISTORY_FILE" ]]; then
         die "History file not found: $HISTORY_FILE"
     fi
+}
+
+prune_stale_cache() {
+    [[ -d "$SESSION_CACHE_DIR" ]] || return 0
+    find "$SESSION_CACHE_DIR" -type f -mtime +30 -delete 2>/dev/null || true
 }
 
 build_session_list() {
@@ -510,6 +518,7 @@ main() {
     done
 
     check_requirements
+    prune_stale_cache
 
     if [[ "$show_all" != "true" && -z "$filter_project" ]]; then
         filter_project="$(pwd)"
