@@ -39,17 +39,30 @@ chrome_is_running() {
     pgrep -x "Google Chrome" >/dev/null 2>&1
 }
 
+# Chrome scopes "Allow JavaScript from Apple Events" per profile, and AppleScript
+# walks windows in front-to-back order, so the first claude.ai tab may live in a
+# profile where execution is blocked. Keep trying the remaining tabs and only
+# report the last error once every claude.ai tab has refused.
 find_claude_tab_and_execute_js() {
     local js=$1
     osascript -e "
     tell application \"Google Chrome\"
+        set lastError to \"\"
+        set sawClaudeTab to false
         repeat with w in windows
             repeat with t in tabs of w
                 if URL of t contains \"claude.ai\" then
-                    return (execute t javascript \"$js\")
+                    set sawClaudeTab to true
+                    try
+                        return (execute t javascript \"$js\")
+                    on error errorMessage
+                        set lastError to errorMessage
+                    end try
                 end if
             end repeat
         end repeat
+        if sawClaudeTab then return lastError
+        return \"\"
     end tell
     " 2>&1
 }

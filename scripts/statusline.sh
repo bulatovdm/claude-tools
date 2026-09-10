@@ -46,7 +46,8 @@ Claude Code versions that don't send the effort field at all.
 
 Uses native rate_limits from Claude Code stdin (v2.1.80+).
 Falls back to Chrome AppleScript if rate_limits not available.
-Fallback requires: Google Chrome with claude.ai tab open, "Allow JavaScript from Apple Events" enabled.
+Fallback requires: Google Chrome with claude.ai tab open, "Allow JavaScript from Apple Events"
+enabled in that tab's profile (the setting is per profile; every claude.ai tab is tried).
 
 Options:
     -h, --help      Show this help message

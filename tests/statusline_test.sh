@@ -628,6 +628,47 @@ assert_contains "error file content passed through" "$result" "error:open Chrome
 rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
 
 echo ""
+echo "[fetch_usage_via_chrome tab classification]"
+
+run_fetch_via_chrome() {
+    local tab_result=$1
+    local error_file=$2
+    bash -c "
+        source '$TEST_CHROME'
+        USAGE_CACHE_FILE='${error_file%.error}'
+        USAGE_ERROR_FILE='$error_file'
+        USAGE_LOG_FILE='/dev/null'
+        chrome_is_running() { return 0; }
+        open_claude_tab() { echo 'OPENED_TAB'; }
+        find_claude_tab_and_execute_js() { cat <<'TAB_RESULT'
+$tab_result
+TAB_RESULT
+        }
+        fetch_usage_via_chrome || echo 'FETCH_FAILED'
+    "
+}
+
+FETCH_ERROR="/tmp/claude-statusline-test-fetch-$$.error"
+rm -f "$FETCH_ERROR"
+
+result=$(run_fetch_via_chrome '{"five_hour":{"utilization":42}}' "$FETCH_ERROR")
+assert_contains "usable tab result passes through" "$result" '"utilization":42'
+
+JS_OFF="execution error: Google Chrome got an error: Executing JavaScript through AppleScript is turned off."
+result=$(run_fetch_via_chrome "$JS_OFF" "$FETCH_ERROR")
+assert_contains "every claude.ai tab refusing JS reports the setting" "$(cat "$FETCH_ERROR")" "enable Chrome JS"
+assert_contains "refused JS fails the fetch" "$result" "FETCH_FAILED"
+
+result=$(run_fetch_via_chrome "" "$FETCH_ERROR")
+assert_contains "no claude.ai tab asks to open one" "$(cat "$FETCH_ERROR")" "open claude.ai"
+assert_contains "no claude.ai tab opens it" "$result" "OPENED_TAB"
+
+result=$(run_fetch_via_chrome "orgs: 403" "$FETCH_ERROR")
+assert_contains "non-JSON tab result reports API error" "$(cat "$FETCH_ERROR")" "API error"
+
+rm -f "$FETCH_ERROR"
+
+echo ""
 echo "=== Native module ==="
 echo ""
 

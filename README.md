@@ -60,13 +60,15 @@ Usage limits are fetched from **claude.ai via Chrome AppleScript** — the scrip
 
 > **Note:** Claude Code v2.1.80+ provides `rate_limits` in the statusline stdin JSON natively, but currently without model-scoped limits. A native usage module (`usage_native.sh`) is included for future use when the native API becomes more complete.
 
-If no claude.ai tab is found, one is automatically opened. Error states are shown in the status bar:
+If no claude.ai tab is found, one is automatically opened. Every claude.ai tab is tried in turn — "Allow JavaScript from Apple Events" is a per-profile Chrome setting, so a claude.ai tab in a profile where it is off no longer blocks a working tab in another profile.
+
+Error states are shown in the status bar:
 
 | Status | Meaning |
 |--------|---------|
 | `⚠ open Chrome` | Chrome is not running |
 | `⚠ open claude.ai` | No claude.ai tab found (auto-opens one) |
-| `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled |
+| `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled in every profile with a claude.ai tab |
 | `⚠ API error` | claude.ai API returned an error |
 
 ### Session Picker
@@ -136,7 +138,7 @@ Changes take effect from the next Claude Code session (or after opening `/hooks`
 - [Claude Code](https://claude.ai/claude-code) CLI
 - `jq` — JSON processor
 - macOS with Google Chrome
-- **Chrome setting**: View → Developer → Allow JavaScript from Apple Events
+- **Chrome setting**: View → Developer → Allow JavaScript from Apple Events (per Chrome profile)
 
 ```bash
 brew install jq
@@ -180,7 +182,7 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Events**
+Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Events** — the setting is per profile, so enable it in the profile whose claude.ai tab stays open.
 
 ## Usage
 
