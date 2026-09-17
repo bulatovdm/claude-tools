@@ -69,7 +69,27 @@ Error states are shown in the status bar:
 | `⚠ open Chrome` | Chrome is not running |
 | `⚠ open claude.ai` | No claude.ai tab found (auto-opens one) |
 | `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled in every profile with a claude.ai tab |
+| `⚠ Chrome busy` | Apple Events are being answered by a second, windowless Chrome instance |
 | `⚠ API error` | claude.ai API returned an error |
+
+A refresh that fails does not blank the limits right away: the last known values
+keep showing for 30 minutes (`USAGE_CACHE_GRACE_AGE`) before the error replaces them.
+
+#### `⚠ Chrome busy` — a second Chrome instance
+
+AppleScript addresses Chrome by bundle id, so any second instance of the same app
+answers the events instead of the real browser. The common source is a headless run:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --screenshot=out.png --user-data-dir=/tmp/whatever file://...
+```
+
+While that runs, the status line reaches an instance with no windows and no
+claude.ai session. The status line now detects this and keeps the last values
+instead of opening tabs in the wrong instance. To avoid it entirely, render with a
+binary that has its own bundle id — `chrome-headless-shell` or Chrome for Testing —
+rather than the installed Google Chrome.
 
 ### Session Picker
 

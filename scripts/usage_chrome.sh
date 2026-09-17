@@ -10,6 +10,7 @@
 : "${USAGE_LOG_FILE:="/tmp/claude-statusline.log"}"
 : "${USAGE_CACHE_MAX_AGE:=300}"
 : "${USAGE_CACHE_STALE_AGE:=600}"
+: "${USAGE_CACHE_GRACE_AGE:=1800}"
 : "${USAGE_CACHE_LOCK_TIMEOUT:=10}"
 : "${USAGE_CACHE_LOCK_STALE_AGE:=60}"
 
@@ -37,6 +38,18 @@ clear_error() {
 
 chrome_is_running() {
     pgrep -x "Google Chrome" >/dev/null 2>&1
+}
+
+chrome_instance_count() {
+    pgrep -x "Google Chrome" 2>/dev/null | grep -c .
+}
+
+# Apple Events are addressed by bundle id, so a second Chrome instance — a
+# headless --screenshot run, say — answers them instead of the real browser
+# and reports zero windows. Asking the instance we actually reached tells a
+# hijacked event apart from a browser whose windows are simply all closed.
+addressed_chrome_window_count() {
+    osascript -e 'tell application "Google Chrome" to count windows' 2>/dev/null
 }
 
 # Chrome scopes "Allow JavaScript from Apple Events" per profile, and AppleScript
@@ -79,6 +92,21 @@ fetch_usage_via_chrome() {
     if ! chrome_is_running; then
         log_event "chrome: not running"
         set_error "open Chrome"
+        return 1
+    fi
+
+    # Without this, a hijacked event looks like "no claude.ai tab" and we would
+    # open one in the wrong instance — invisible, logged out, and JS-disabled.
+    local window_count
+    window_count=$(addressed_chrome_window_count)
+    if [[ "$window_count" == "0" ]]; then
+        if (( $(chrome_instance_count) > 1 )); then
+            log_event "chrome: apple events answered by a windowless second instance"
+            set_error "Chrome busy"
+        else
+            log_event "chrome: no windows open"
+            set_error "open Chrome"
+        fi
         return 1
     fi
 
@@ -200,6 +228,11 @@ get_usage_limits_chrome() {
 
     local result
     result=$(read_usage_from_cache) && { echo "$result"; return; }
+
+    # A refresh that could not run leaves limits that are still roughly right,
+    # so keep serving the last values for a while instead of blanking them out
+    result=$(USAGE_CACHE_STALE_AGE=$USAGE_CACHE_GRACE_AGE; read_usage_from_cache) \
+        && { echo "$result"; return; }
 
     local error_msg=""
     if [[ -f "$USAGE_ERROR_FILE" ]]; then

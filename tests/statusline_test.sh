@@ -39,6 +39,22 @@ assert_contains() {
     fi
 }
 
+assert_not_contains() {
+    local test_name=$1
+    local actual=$2
+    local unexpected=$3
+
+    if echo "$actual" | grep -qF "$unexpected"; then
+        FAIL=$((FAIL + 1))
+        echo "  FAIL: $test_name"
+        echo "    Expected NOT to contain: $unexpected"
+        echo "    Actual: $actual"
+    else
+        PASS=$((PASS + 1))
+        echo "  PASS: $test_name"
+    fi
+}
+
 assert_equals() {
     local test_name=$1
     local actual=$2
@@ -639,6 +655,7 @@ run_fetch_via_chrome() {
         USAGE_ERROR_FILE='$error_file'
         USAGE_LOG_FILE='/dev/null'
         chrome_is_running() { return 0; }
+        addressed_chrome_window_count() { echo '1'; }
         open_claude_tab() { echo 'OPENED_TAB'; }
         find_claude_tab_and_execute_js() { cat <<'TAB_RESULT'
 $tab_result
@@ -667,6 +684,61 @@ result=$(run_fetch_via_chrome "orgs: 403" "$FETCH_ERROR")
 assert_contains "non-JSON tab result reports API error" "$(cat "$FETCH_ERROR")" "API error"
 
 rm -f "$FETCH_ERROR"
+
+echo ""
+echo "[fetch_usage_via_chrome instance detection]"
+
+run_fetch_with_windows() {
+    local window_count=$1
+    local instance_count=$2
+    local error_file=$3
+    bash -c "
+        source '$TEST_CHROME'
+        USAGE_CACHE_FILE='${error_file%.error}'
+        USAGE_ERROR_FILE='$error_file'
+        USAGE_LOG_FILE='/dev/null'
+        chrome_is_running() { return 0; }
+        chrome_instance_count() { echo '$instance_count'; }
+        addressed_chrome_window_count() { echo '$window_count'; }
+        open_claude_tab() { echo 'OPENED_TAB'; }
+        find_claude_tab_and_execute_js() { echo ''; }
+        fetch_usage_via_chrome || echo 'FETCH_FAILED'
+    "
+}
+
+WINDOW_ERROR="/tmp/claude-statusline-test-window-$$.error"
+rm -f "$WINDOW_ERROR"
+
+result=$(run_fetch_with_windows 0 2 "$WINDOW_ERROR")
+assert_contains "windowless second instance reports Chrome busy" "$(cat "$WINDOW_ERROR")" "Chrome busy"
+assert_not_contains "hijacked event opens no tab" "$result" "OPENED_TAB"
+
+result=$(run_fetch_with_windows 0 1 "$WINDOW_ERROR")
+assert_contains "sole instance without windows asks to open Chrome" "$(cat "$WINDOW_ERROR")" "open Chrome"
+assert_not_contains "windowless Chrome opens no tab" "$result" "OPENED_TAB"
+
+result=$(run_fetch_with_windows 3 1 "$WINDOW_ERROR")
+assert_contains "windows present still looks for a tab" "$result" "OPENED_TAB"
+
+rm -f "$WINDOW_ERROR"
+
+echo ""
+echo "[get_usage_limits_chrome grace window]"
+
+GRACE_CACHE="/tmp/claude-statusline-test-grace-$$"
+cp "$READ_CACHE" "$GRACE_CACHE" 2>/dev/null || echo '{"five_hour":{"utilization":42,"resets_at":"'"$RESET_2H"'"},"seven_day":{"utilization":13,"resets_at":"'"$RESET_2H"'"}}' > "$GRACE_CACHE"
+rm -f "${GRACE_CACHE}.error"
+echo "Chrome busy" > "${GRACE_CACHE}.error"
+
+touch -t 202001010000 "$GRACE_CACHE"
+
+result=$(run_chrome_func_with_cache "$GRACE_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=600; USAGE_CACHE_GRACE_AGE=99999999999; fetch_usage_limits() { return 1; }; get_usage_limits_chrome")
+assert_not_contains "cache past stale but within grace still shows limits" "$result" "error:"
+
+result=$(run_chrome_func_with_cache "$GRACE_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=600; USAGE_CACHE_GRACE_AGE=1800; fetch_usage_limits() { return 1; }; get_usage_limits_chrome")
+assert_contains "cache past grace falls back to the error" "$result" "error:Chrome busy"
+
+rm -f "$GRACE_CACHE" "${GRACE_CACHE}.error"
 
 echo ""
 echo "=== Native module ==="
