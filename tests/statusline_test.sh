@@ -741,6 +741,72 @@ assert_contains "cache past grace falls back to the error" "$result" "error:Chro
 rm -f "$GRACE_CACHE" "${GRACE_CACHE}.error"
 
 echo ""
+echo "[merge_usage_sources]"
+
+NATIVE_LINE="24|74||2026-09-17T18:10:00|2026-09-17T19:00:00|||"
+CHROME_LINE="37|70|12|2026-09-17T17:00:00|2026-09-17T23:00:00|2026-09-18T01:00:00|89|2026-09-17T23:00:00"
+
+result=$(run_func "merge_usage_sources '$NATIVE_LINE' '$CHROME_LINE'")
+assert_equals "native owns 5h and weekly, chrome owns model rows" "$result" "24|74|12|2026-09-17T18:10:00|2026-09-17T19:00:00|2026-09-18T01:00:00|89|2026-09-17T23:00:00"
+
+result=$(run_func "merge_usage_sources '||||||||' '$CHROME_LINE'")
+assert_equals "chrome fills in when stdin carries no limits" "$result" "37|70|12|2026-09-17T17:00:00|2026-09-17T23:00:00|2026-09-18T01:00:00|89|2026-09-17T23:00:00"
+
+result=$(run_func "merge_usage_sources '$NATIVE_LINE' 'error:Chrome busy|||||||'")
+assert_equals "an unreachable chrome leaves native limits intact" "$result" "24|74||2026-09-17T18:10:00|2026-09-17T19:00:00|||"
+
+result=$(run_func "merge_usage_sources '$NATIVE_LINE' 'error:Chrome busy|||||||'")
+assert_not_contains "chrome error stays quiet while stdin has limits" "$result" "error:"
+
+result=$(run_func "merge_usage_sources '||||||||' 'error:Chrome busy|||||||'")
+assert_contains "chrome error surfaces when it was the only source" "$result" "error:Chrome busy"
+
+echo ""
+echo "[get_usage_limits source selection]"
+
+# get_usage_limits sources its modules from SCRIPT_DIR, so the stand-ins have to
+# live on disk — a shell-level mock would be overwritten by that source
+FAKE_MODULE_DIR=$(mktemp -d)
+cp "$NATIVE_MODULE" "$FAKE_MODULE_DIR/usage_native.sh"
+cat > "$FAKE_MODULE_DIR/usage_chrome.sh" <<'FAKE_CHROME'
+get_usage_limits_chrome() { echo "37|70|12|chrome-5h|chrome-week|chrome-sonnet|89|chrome-fable"; }
+FAKE_CHROME
+
+STDIN_WITH_LIMITS='{"rate_limits":{"five_hour":{"used_percentage":24,"resets_at":1789683000},"seven_day":{"used_percentage":74,"resets_at":1789686000}}}'
+
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    SCRIPT_DIR='$FAKE_MODULE_DIR'
+    SHOW_SONNET=0
+    SHOW_FABLE=0
+    get_usage_limits '$STDIN_WITH_LIMITS'
+")
+assert_not_contains "model rows hidden means chrome is skipped" "$result" "chrome-"
+assert_contains "stdin limits still render" "$result" "24|74|"
+
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    SCRIPT_DIR='$FAKE_MODULE_DIR'
+    SHOW_SONNET=0
+    SHOW_FABLE=1
+    get_usage_limits '$STDIN_WITH_LIMITS'
+")
+assert_contains "fable shown means chrome supplies its row" "$result" "|89|chrome-fable"
+assert_contains "fable shown still keeps native 5h" "$result" "24|74|"
+assert_not_contains "chrome never overrides the native 5h reset" "$result" "chrome-5h"
+
+result=$(bash -c "
+    source '$TEST_SCRIPT'
+    SCRIPT_DIR='$FAKE_MODULE_DIR'
+    SHOW_SONNET=0
+    SHOW_FABLE=0
+    get_usage_limits '{}'
+")
+assert_contains "stdin without limits falls back to chrome" "$result" "37|70|"
+
+rm -rf "$FAKE_MODULE_DIR"
+
+echo ""
 echo "=== Native module ==="
 echo ""
 

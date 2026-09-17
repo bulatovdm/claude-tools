@@ -44,10 +44,11 @@ session.sh (cs) restores the session's own effort/thinking into settings.json
 before launch, so stdin stays truthful. The transcript is only a fallback for
 Claude Code versions that don't send the effort field at all.
 
-Uses native rate_limits from Claude Code stdin (v2.1.80+).
-Falls back to Chrome AppleScript if rate_limits not available.
-Fallback requires: Google Chrome with claude.ai tab open, "Allow JavaScript from Apple Events"
-enabled in that tab's profile (the setting is per profile; every claude.ai tab is tried).
+5h and weekly limits come from the native rate_limits on stdin (Claude Code v2.1.80+).
+Model-scoped rows (Sonnet, Fable) exist only in the claude.ai API and are read through
+Chrome AppleScript; Chrome is skipped when neither is shown. Chrome reads require a
+claude.ai tab and "Allow JavaScript from Apple Events" enabled in that tab's profile
+(the setting is per profile; every claude.ai tab is tried).
 
 Options:
     -h, --help      Show this help message
@@ -442,9 +443,57 @@ timer_icon_for_seconds() {
     fi
 }
 
+# Claude Code sends the account-wide windows on stdin, where nothing in the
+# browser can disturb them, so those own 5h and weekly. The claude.ai API is
+# still the only source of model-scoped rows, so Chrome is consulted for those
+# alone — and skipped entirely when neither model-scoped row is shown.
+merge_usage_sources() {
+    local native=$1
+    local chrome=$2
+
+    local chrome_error=""
+    if [[ "${chrome%%|*}" == error:* ]]; then
+        chrome_error="${chrome%%|*}"
+        chrome="|||||||"
+    fi
+
+    local n_five n_week n_sonnet n_five_reset n_week_reset n_sonnet_reset n_fable n_fable_reset
+    local c_five c_week c_sonnet c_five_reset c_week_reset c_sonnet_reset c_fable c_fable_reset
+    IFS='|' read -r n_five n_week n_sonnet n_five_reset n_week_reset n_sonnet_reset n_fable n_fable_reset <<< "$native"
+    IFS='|' read -r c_five c_week c_sonnet c_five_reset c_week_reset c_sonnet_reset c_fable c_fable_reset <<< "$chrome"
+
+    local five="${n_five:-$c_five}"
+    local week="${n_week:-$c_week}"
+    local five_reset="${n_five_reset:-$c_five_reset}"
+    local week_reset="${n_week_reset:-$c_week_reset}"
+
+    # An unreachable browser is only worth reporting when it was the only source
+    if [[ -n "$chrome_error" && -z "${five}${week}" ]]; then
+        echo "${chrome_error}|||||||"
+        return
+    fi
+
+    echo "${five}|${week}|${c_sonnet}|${five_reset}|${week_reset}|${c_sonnet_reset}|${c_fable}|${c_fable_reset}"
+}
+
+usage_line_is_empty() {
+    [[ -z "$(echo "$1" | tr -d '|')" ]]
+}
+
 get_usage_limits() {
+    local input=$1
+
+    source "${SCRIPT_DIR}/usage_native.sh"
+    local native
+    native=$(get_usage_limits_native "$input")
+
+    if [[ "$SHOW_SONNET" == "0" && "$SHOW_FABLE" == "0" ]] && ! usage_line_is_empty "$native"; then
+        echo "$native"
+        return
+    fi
+
     source "${SCRIPT_DIR}/usage_chrome.sh"
-    get_usage_limits_chrome
+    merge_usage_sources "$native" "$(get_usage_limits_chrome)"
 }
 
 format_usage_part() {
@@ -592,7 +641,7 @@ main() {
     cost=$(parse_cost "$input")
     duration_ms=$(parse_duration "$input")
 
-    usage_data=$(get_usage_limits)
+    usage_data=$(get_usage_limits "$input")
     local error_msg=""
     if [[ "${usage_data%%|*}" == error:* ]]; then
         error_msg="${usage_data%%|*}"

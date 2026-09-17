@@ -56,9 +56,18 @@ When running multiple Claude Code sessions simultaneously, each session independ
 
 ### How It Works
 
-Usage limits are fetched from **claude.ai via Chrome AppleScript** — the script executes an XHR request directly in an open claude.ai browser tab, bypassing Cloudflare and OAuth token issues. Data is cached for 5 minutes. This provides the most complete data including model-scoped weekly limits.
+Usage limits come from two sources, each used for what only it can provide:
 
-> **Note:** Claude Code v2.1.80+ provides `rate_limits` in the statusline stdin JSON natively, but currently without model-scoped limits. A native usage module (`usage_native.sh`) is included for future use when the native API becomes more complete.
+| Row | Source | Module |
+|-----|--------|--------|
+| `5h`, `Week` | `rate_limits` in the statusline stdin JSON (Claude Code v2.1.80+) | `usage_native.sh` |
+| `Sonnet`, `Fable` | `GET /api/organizations/{orgId}/usage`, via an XHR run inside an open claude.ai tab by Chrome AppleScript | `usage_chrome.sh` |
+
+The account-wide windows arrive on stdin, so nothing happening in the browser can
+disturb them. The claude.ai API is still the only place model-scoped limits exist,
+so Chrome is consulted for those rows alone — and skipped entirely when neither
+`STATUSLINE_SHOW_SONNET` nor `STATUSLINE_SHOW_FABLE` is enabled. Chrome data is
+cached for 5 minutes; a Chrome failure never blanks the stdin-backed rows.
 
 If no claude.ai tab is found, one is automatically opened. Every claude.ai tab is tried in turn — "Allow JavaScript from Apple Events" is a per-profile Chrome setting, so a claude.ai tab in a profile where it is off no longer blocks a working tab in another profile.
 
@@ -72,8 +81,11 @@ Error states are shown in the status bar:
 | `⚠ Chrome busy` | Apple Events are being answered by a second, windowless Chrome instance |
 | `⚠ API error` | claude.ai API returned an error |
 
-A refresh that fails does not blank the limits right away: the last known values
-keep showing for 30 minutes (`USAGE_CACHE_GRACE_AGE`) before the error replaces them.
+These states only concern the Chrome-backed rows, and they surface as a warning
+only when stdin carried no limits either — otherwise `Sonnet`/`Fable` simply show
+`?` while `5h` and `Week` stay live. A failed refresh does not blank the Chrome
+rows right away: the last known values keep showing for 30 minutes
+(`USAGE_CACHE_GRACE_AGE`) before the error replaces them.
 
 #### `⚠ Chrome busy` — a second Chrome instance
 

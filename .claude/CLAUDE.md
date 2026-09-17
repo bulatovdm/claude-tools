@@ -41,9 +41,14 @@ Claude Code использует `~/.claude/statusline.sh`, а не файл и�
 ## Архитектура статус-линии
 
 - Получает JSON от Claude Code через stdin (model, context_window, cost и т.д.)
-- Загружает лимиты использования (5h/weekly) через **Chrome AppleScript** — XHR в контексте открытой вкладки claude.ai
-- Endpoint: `GET /api/organizations/{orgId}/usage` на claude.ai
-- Лимиты кэшируются в `/tmp/claude-statusline-usage-cache` (обновление раз в 5 мин, stale через 10 мин)
+- Лимиты 5h/weekly берёт из `rate_limits` в stdin (`usage_native.sh`) — не зависит от браузера
+- Model-scoped лимиты (Sonnet, Fable) есть только в API claude.ai: `GET /api/organizations/{orgId}/usage`
+  через **Chrome AppleScript** — XHR в контексте открытой вкладки (`usage_chrome.sh`)
+- В Chrome не ходит вовсе, если `STATUSLINE_SHOW_SONNET` и `STATUSLINE_SHOW_FABLE` выключены
+- Chrome-лимиты кэшируются в `/tmp/claude-statusline-usage-cache` (обновление раз в 5 мин, stale через 10 мин,
+  затем ещё 30 мин показываются последние значения)
+- Второй инстанс Chrome (headless-рендер из того же `Google Chrome.app`) перехватывает Apple Events:
+  скрипт это распознаёт (0 окон + >1 процесса) и не трогает вкладки
 - Цвета: зелёный (<60%), жёлтый (60-90%), красный (90%+)
 - При ошибках показывает причину: `⚠ open Chrome`, `⚠ open claude.ai`, `⚠ enable Chrome JS`
 - Если вкладка claude.ai не найдена — автоматически открывает
