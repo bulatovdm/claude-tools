@@ -7,6 +7,8 @@ scripts/statusline.sh        - Скрипт статус-линии для Claud
 scripts/session.sh           - Интерактивный пикер сессий (alias: cs)
 scripts/git-hooks/           - Глобальные git-хуки (чистка подписей Claude): commit-msg + post-commit
 scripts/link-global-hooks.sh - Делегаторы к глобальным хукам для проектов с локальным core.hooksPath
+scripts/hg-extensions/       - Расширение Mercurial с той же чисткой подписей (git-хуки на hg не действуют)
+tests/hg_extension_test.sh   - Тесты hg-расширения (изолированный HGRCPATH)
 tests/statusline_test.sh     - Тесты статус-линии
 install.sh                   - Скрипт установки
 ```

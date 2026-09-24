@@ -140,6 +140,17 @@ If the project has its own `commit-msg` hook in `.git/hooks/`, it will be called
 
 > **Note:** Projects that override `core.hooksPath` locally (e.g. `core.hooksPath = .githooks`) bypass global hooks entirely — git honours only one hooksPath. Run `scripts/link-global-hooks.sh [PROJECT_DIR]` inside such a project to wire its local hooks dir to the global ones: it installs thin `commit-msg` / `post-commit` delegators that call the global hook and then any pre-existing project hook (which is preserved as `.<hook>.project`). So Claude signatures get cleaned while the project's own logic (conventional-commits validation, composer checks, …) keeps running. Re-running the script is idempotent.
 
+### Mercurial Extension
+
+Git hooks do nothing for Mercurial repositories, so signatures slipped into hg history. The `strip_claude_signature` extension (`scripts/hg-extensions/`) does the same cleanup for every `hg` commit:
+
+- Removes `Co-Authored-By: ... <noreply@anthropic.com>` (case-insensitive) and `🤖 Generated with [Claude Code]`
+- Human co-authors (`Co-Authored-By: Ivan <ivan@example.com>`) are kept
+
+Mercurial hooks cannot rewrite a commit message — `pretxncommit` can only reject the commit — so this is an extension rather than a hook. It wraps `localrepo.commitctx`, the single point every changeset is written through: `hg commit -m`, a message typed in the editor, `commit --amend`, rebase, graft, histedit.
+
+The installer copies it to `~/.hgext/strip_claude_signature.py` and enables it in `~/.hgrc`, so it applies to every hg repository of the user. It is skipped when `hg` is not installed. Check that it is active in a given repository with `hg config extensions`.
+
 ### Malformed Tool-Call Hook
 
 A `Stop` hook that catches malformed tool calls left as raw text in the model's last message (an unparsed tool-invocation block that never became a real tool_use). When detected, it blocks the stop so the model retries the call cleanly instead of halting and waiting for the user.
@@ -191,8 +202,9 @@ The installer will:
 2. Install the session picker to `~/.claude/session.sh` and add shell aliases: `cs` (picker) and `cn` (new session with pinned effort)
 3. Install the `save-model.sh` SessionStart hook and register it in `settings.json`
 4. Install git hooks to `~/.git-hooks/` and set global `core.hooksPath`
-5. Configure the status line in `settings.json`
-6. Open Chrome with claude.ai if needed and check that "Allow JavaScript from Apple Events" is enabled
+5. Install the Mercurial extension to `~/.hgext/` and enable it in `~/.hgrc` (if `hg` is installed)
+6. Configure the status line in `settings.json`
+7. Open Chrome with claude.ai if needed and check that "Allow JavaScript from Apple Events" is enabled
 
 The default effort level for the `cn` alias is `high`; set `CLAUDE_NEW_SESSION_EFFORT` when running the installer to pick another (e.g. `CLAUDE_NEW_SESSION_EFFORT=xhigh ./install.sh`).
 
@@ -232,6 +244,7 @@ Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Even
 
 ```bash
 bash tests/statusline_test.sh    # Run tests
+bash tests/hg_extension_test.sh  # Mercurial extension (isolated HGRCPATH)
 ~/.claude/statusline.sh --test   # Visual preview
 ~/.claude/statusline.sh --help   # Show help
 ~/.claude/session.sh --help      # Session picker help

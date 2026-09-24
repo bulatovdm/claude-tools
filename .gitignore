@@ -1,3 +1,4 @@
 .DS_Store
 *.backup.*
 settings.local.json
+__pycache__/

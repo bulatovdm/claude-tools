@@ -9,6 +9,10 @@ readonly SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)/scripts"
 readonly HOOKS_DIR="$SCRIPTS_DIR/hooks"
 readonly GIT_HOOKS_DIR="$SCRIPTS_DIR/git-hooks"
 readonly GIT_HOOKS_TARGET="$HOME/.git-hooks"
+readonly HG_EXTENSION_NAME="strip_claude_signature"
+readonly HG_EXTENSION_SOURCE="$SCRIPTS_DIR/hg-extensions/$HG_EXTENSION_NAME.py"
+readonly HG_EXTENSION_TARGET="$HOME/.hgext/$HG_EXTENSION_NAME.py"
+readonly HGRC="$HOME/.hgrc"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -230,6 +234,56 @@ install_git_hooks() {
     fi
 }
 
+hg_extension_registered() {
+    [[ -n "$(hg config "extensions.$HG_EXTENSION_NAME" 2>/dev/null)" ]]
+}
+
+install_hg_extension() {
+    local force=${1:-false}
+
+    if ! command -v hg &> /dev/null; then
+        log_info "Mercurial not found — skipping hg extension"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$HG_EXTENSION_TARGET")"
+
+    if [ -f "$HG_EXTENSION_TARGET" ] && [ "$force" != "true" ]; then
+        log_warning "hg extension $HG_EXTENSION_NAME already exists. Use --force to overwrite"
+    else
+        if [ -f "$HG_EXTENSION_TARGET" ]; then
+            backup_file "$HG_EXTENSION_TARGET"
+        fi
+        cp "$HG_EXTENSION_SOURCE" "$HG_EXTENSION_TARGET"
+        log_success "Installed: $HG_EXTENSION_TARGET"
+    fi
+
+    if hg_extension_registered; then
+        log_success "hg extension already enabled: $(hg config "extensions.$HG_EXTENSION_NAME")"
+        return 0
+    fi
+
+    backup_file "$HGRC"
+    # Mercurial merges repeated sections, so a fresh [extensions] header is
+    # safe even when ~/.hgrc already has one
+    printf '\n[extensions]\n%s = ~/.hgext/%s.py\n' "$HG_EXTENSION_NAME" "$HG_EXTENSION_NAME" >> "$HGRC"
+    log_success "Enabled hg extension $HG_EXTENSION_NAME in $HGRC"
+}
+
+uninstall_hg_extension() {
+    if [ -f "$HG_EXTENSION_TARGET" ]; then
+        rm "$HG_EXTENSION_TARGET"
+        rm -f "$(dirname "$HG_EXTENSION_TARGET")/__pycache__/$HG_EXTENSION_NAME".*.pyc
+        log_success "Removed: $HG_EXTENSION_TARGET"
+    fi
+
+    if [ -f "$HGRC" ] && grep -qE "^$HG_EXTENSION_NAME[[:space:]]*=" "$HGRC"; then
+        backup_file "$HGRC"
+        sed -i '' -E "/^$HG_EXTENSION_NAME[[:space:]]*=/d" "$HGRC"
+        log_success "Disabled hg extension $HG_EXTENSION_NAME in $HGRC"
+    fi
+}
+
 install_hooks() {
     local force=${1:-false}
     local hooks_target_dir="$CLAUDE_DIR/hooks"
@@ -365,6 +419,7 @@ do_install() {
     install_alias
     install_hooks "$force"
     install_git_hooks "$force"
+    install_hg_extension "$force"
     configure_settings
     configure_hooks_settings
     setup_chrome
@@ -426,6 +481,8 @@ do_uninstall() {
         log_success "Unset global core.hooksPath"
     fi
 
+    uninstall_hg_extension
+
     if [ -f "$settings" ] && jq -e '.statusLine' "$settings" > /dev/null 2>&1; then
         backup_file "$settings"
         jq 'del(.statusLine) | del(.hooks.SessionStart[] | select(.hooks[]?.command == "~/.claude/hooks/save-model.sh")) | del(.hooks.ConfigChange[] | select(.hooks[]?.command == "~/.claude/hooks/save-model.sh"))' "$settings" > "${settings}.tmp" 2>/dev/null || jq 'del(.statusLine)' "$settings" > "${settings}.tmp"
@@ -480,6 +537,14 @@ do_status() {
         done
     else
         log_warning "git-hooks: not configured (core.hooksPath = ${git_hooks_path:-<unset>})"
+    fi
+
+    if ! command -v hg &> /dev/null; then
+        log_info "hg extension: Mercurial not installed"
+    elif hg_extension_registered && [ -f "$HG_EXTENSION_TARGET" ]; then
+        log_success "hg extension: $HG_EXTENSION_NAME enabled"
+    else
+        log_warning "hg extension: $HG_EXTENSION_NAME not enabled"
     fi
 
     if [ -f "$settings" ] && jq -e '.statusLine' "$settings" > /dev/null 2>&1; then
