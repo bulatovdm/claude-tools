@@ -104,7 +104,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "6.2.0"
+assert_contains "shows version" "$result" "6.3.0"
 
 echo ""
 echo "[Help]"
@@ -917,6 +917,40 @@ assert_contains "error shows in full output" "$full_output" "open Chrome"
 assert_contains "error shows question marks" "$full_output" "5h: ?"
 
 rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
+
+echo ""
+echo "[Project segment]"
+
+SEGMENT_ROOT=$(mktemp -d)
+TRUSTED_PROJECT="$SEGMENT_ROOT/trusted/app"
+FOREIGN_PROJECT="$SEGMENT_ROOT/foreign/app"
+SIBLING_PROJECT="$SEGMENT_ROOT/trusted-sibling/app"
+SILENT_PROJECT="$SEGMENT_ROOT/trusted/silent"
+for project in "$TRUSTED_PROJECT" "$FOREIGN_PROJECT" "$SIBLING_PROJECT" "$SILENT_PROJECT"; do
+    mkdir -p "$project/.claude"
+    printf '#!/bin/bash\nprintf "SEGMENT %%s" "$(cat)"\n' > "$project/.claude/statusline-segment.sh"
+    chmod +x "$project/.claude/statusline-segment.sh"
+done
+chmod -x "$SILENT_PROJECT/.claude/statusline-segment.sh"
+TRUSTED_FILE="$SEGMENT_ROOT/trusted-roots"
+printf '# my projects\n%s/trusted/\n' "$SEGMENT_ROOT" > "$TRUSTED_FILE"
+
+segment_for() {
+    local input=$1
+    bash -c "source '$TEST_SCRIPT'; TRUSTED_ROOTS_FILE='$TRUSTED_FILE'; print_project_segment '$input'" 2>&1
+}
+
+trusted_input="{\"workspace\":{\"project_dir\":\"$TRUSTED_PROJECT\"}}"
+assert_equals "trusted project segment gets the same stdin" "$(segment_for "$trusted_input")" "SEGMENT $trusted_input"
+cwd_input="{\"cwd\":\"$TRUSTED_PROJECT\"}"
+assert_contains "project falls back to cwd" "$(segment_for "$cwd_input")" "SEGMENT"
+assert_equals "project outside trusted roots runs nothing" "$(segment_for "{\"workspace\":{\"project_dir\":\"$FOREIGN_PROJECT\"}}")" ""
+assert_equals "sibling sharing the root prefix is not trusted" "$(segment_for "{\"workspace\":{\"project_dir\":\"$SIBLING_PROJECT\"}}")" ""
+assert_equals "non-executable segment is skipped" "$(segment_for "{\"workspace\":{\"project_dir\":\"$SILENT_PROJECT\"}}")" ""
+missing_trusted=$(bash -c "source '$TEST_SCRIPT'; TRUSTED_ROOTS_FILE='$SEGMENT_ROOT/none'; print_project_segment '$trusted_input'" 2>&1)
+assert_equals "no trusted roots file runs nothing" "$missing_trusted" ""
+
+rm -rf "$SEGMENT_ROOT"
 
 echo ""
 echo "[Color coding]"

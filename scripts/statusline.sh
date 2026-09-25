@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="6.2.0"
+readonly VERSION="6.3.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -17,6 +17,12 @@ readonly BAR_FILLED="█"
 readonly BAR_EMPTY="░"
 
 readonly THINKING_ICON="✻"
+
+# Project extension point: a project adds its own lines under the status line
+# by shipping an executable file at this path inside its root.
+readonly PROJECT_SEGMENT_PATH=".claude/statusline-segment.sh"
+# Only projects under a directory listed here (one path per line) may run it.
+readonly TRUSTED_ROOTS_FILE="${STATUSLINE_TRUSTED_FILE:-$HOME/.claude/statusline-trusted}"
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -49,6 +55,12 @@ Model-scoped rows (Sonnet, Fable) exist only in the claude.ai API and are read t
 Chrome AppleScript; Chrome is skipped when neither is shown. Chrome reads require a
 claude.ai tab and "Allow JavaScript from Apple Events" enabled in that tab's profile
 (the setting is per profile; every claude.ai tab is tried).
+
+Project segment: if the project directory (.workspace.project_dir, else .cwd)
+contains an executable $PROJECT_SEGMENT_PATH and lies under a directory
+listed in $TRUSTED_ROOTS_FILE, the segment is run with the same stdin JSON and
+its output is printed below the status line. A failing or missing segment, or
+a project outside the trusted roots, prints nothing.
 
 Options:
     -h, --help      Show this help message
@@ -614,6 +626,32 @@ run_test() {
     format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000" "open claude.ai"
 }
 
+project_is_trusted() {
+    local project_dir=$1
+    local root
+
+    [[ -r "$TRUSTED_ROOTS_FILE" ]] || return 1
+    while IFS= read -r root || [[ -n "$root" ]]; do
+        root="${root%/}"
+        [[ -n "$root" && "$root" != \#* ]] || continue
+        [[ "$project_dir" == "$root" || "$project_dir" == "$root"/* ]] && return 0
+    done < "$TRUSTED_ROOTS_FILE"
+    return 1
+}
+
+print_project_segment() {
+    local input=$1
+    local project_dir
+    local segment
+
+    project_dir=$(printf '%s' "$input" | jq -r '.workspace.project_dir // .cwd // empty' 2>/dev/null) || return 0
+    [[ -n "$project_dir" ]] || return 0
+    project_is_trusted "$project_dir" || return 0
+    segment="$project_dir/$PROJECT_SEGMENT_PATH"
+    [[ -x "$segment" ]] || return 0
+    printf '%s' "$input" | "$segment" 2>/dev/null || true
+}
+
 main() {
     local input
     local used
@@ -664,6 +702,7 @@ main() {
     fable_reset="${rest#*|}"
 
     format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg" "$fable" "$fable_reset" "$effort_level" "$thinking_enabled"
+    print_project_segment "$input"
 }
 
 case "${1:-}" in

@@ -47,8 +47,26 @@ The statusline simply trusts stdin, which reports what Claude Code will actually
 |----------|---------|-------------|
 | `STATUSLINE_SHOW_SONNET` | `0` | Show the weekly Sonnet-specific limit. Set to `1` to display it. Currently the API reports no Sonnet-scoped limit, so this shows `Sonnet: ?`. |
 | `STATUSLINE_SHOW_FABLE` | `0` | Show the weekly Fable-specific limit. Set to `1` to display it. Fable replaced Sonnet as the model-scoped weekly limit reported by the API. |
+| `STATUSLINE_TRUSTED_FILE` | `~/.claude/statusline-trusted` | List of directories whose projects may add a project segment (see below). |
 
 Model-scoped weekly limits are read from the `limits[]` array in the claude.ai usage response, matched by `scope.model.display_name`. The legacy top-level `seven_day_<model>` keys are still used as a fallback when present.
+
+### Project Segment
+
+A project can add its own lines under the status line. Put an executable `.claude/statusline-segment.sh` in the project root: on every render it receives the same stdin JSON as the status line, and whatever it prints appears below it (ANSI colors welcome).
+
+```
+Opus ✻high │ Context: ██░░░░░░░░░░░░░ 12% │ 5h: 4% 4h19m ◕ │ Week: 1% 6d17h ● │ Cost: $0.00 │ Time: 0m
+● prod  example.com · bus listener alive
+```
+
+The project directory comes from `.workspace.project_dir` (falling back to `.cwd`). A segment runs only for projects under a directory listed in `~/.claude/statusline-trusted` — one path per line, `#` for comments:
+
+```
+/Users/me/Projects
+```
+
+Without the file nothing runs: a cloned repository would otherwise execute its segment on the first render, before any trust prompt. A missing, non-executable or failing segment prints nothing, and the status line itself is unchanged.
 
 ### Multi-Session Support
 
