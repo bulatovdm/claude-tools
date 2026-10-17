@@ -13,6 +13,10 @@ readonly HG_EXTENSION_NAME="strip_claude_signature"
 readonly HG_EXTENSION_SOURCE="$SCRIPTS_DIR/hg-extensions/$HG_EXTENSION_NAME.py"
 readonly HG_EXTENSION_TARGET="$HOME/.hgext/$HG_EXTENSION_NAME.py"
 readonly HGRC="$HOME/.hgrc"
+readonly CLAUDE_HOOK_SCRIPTS=(save-model.sh notify-phone.sh)
+readonly NOTIFY_HOOK_COMMAND="~/.claude/hooks/notify-phone.sh"
+readonly NOTIFY_HOOK_EVENTS=(Notification Stop UserPromptSubmit)
+readonly NOTIFY_CONFIG="$CLAUDE_DIR/notify.env"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -290,21 +294,74 @@ install_hooks() {
 
     mkdir -p "$hooks_target_dir"
 
-    local target="$hooks_target_dir/save-model.sh"
-    local source="$HOOKS_DIR/save-model.sh"
+    local hook_script
+    for hook_script in "${CLAUDE_HOOK_SCRIPTS[@]}"; do
+        local target="$hooks_target_dir/$hook_script"
 
-    if [ -f "$target" ] && [ "$force" != "true" ]; then
-        log_warning "hooks/save-model.sh already exists. Use --force to overwrite"
+        if [ -f "$target" ] && [ "$force" != "true" ]; then
+            log_warning "hooks/$hook_script already exists. Use --force to overwrite"
+            continue
+        fi
+
+        if [ -f "$target" ]; then
+            backup_file "$target"
+        fi
+
+        cp "$HOOKS_DIR/$hook_script" "$target"
+        chmod +x "$target"
+        log_success "Installed: $target"
+    done
+}
+
+configure_notify_hook_settings() {
+    local settings_file="$CLAUDE_DIR/settings.json"
+
+    if [ ! -f "$settings_file" ]; then
         return 0
     fi
 
-    if [ -f "$target" ]; then
-        backup_file "$target"
+    local event
+    for event in "${NOTIFY_HOOK_EVENTS[@]}"; do
+        if jq -e --arg event "$event" --arg cmd "$NOTIFY_HOOK_COMMAND" \
+            '[.hooks[$event][]?.hooks[]? | select(.command == $cmd)] | length > 0' \
+            "$settings_file" > /dev/null 2>&1; then
+            log_warning "notify-phone hook already configured for $event"
+            continue
+        fi
+
+        backup_file "$settings_file"
+        jq --arg event "$event" --arg cmd "$NOTIFY_HOOK_COMMAND" '
+            .hooks[$event] += [{"hooks": [{"type": "command", "command": $cmd, "async": true}]}]
+        ' "$settings_file" > "${settings_file}.tmp"
+        mv "${settings_file}.tmp" "$settings_file"
+        log_success "Configured notify-phone hook for $event in settings.json"
+    done
+}
+
+create_notify_config() {
+    if [ -f "$NOTIFY_CONFIG" ]; then
+        log_success "Phone notifications config: $NOTIFY_CONFIG"
+        return 0
     fi
 
-    cp "$source" "$target"
-    chmod +x "$target"
-    log_success "Installed: $target"
+    local topic="claude-$(openssl rand -hex 12)"
+    cat > "$NOTIFY_CONFIG" << EOF
+# Phone notifications for Claude Code (scripts/hooks/notify-phone.sh).
+# ntfy: install the ntfy app on the phone and subscribe to this topic.
+# Anyone who knows the topic name can read it, so keep it secret.
+NTFY_TOPIC=$topic
+# NTFY_SERVER=https://ntfy.sh
+
+# Seconds after Claude finishes a reply before "waiting for your reply" is sent.
+# IDLE_NOTIFY_SECONDS=30
+
+# Telegram (optional): a bot from @BotFather and your chat id.
+# TELEGRAM_BOT_TOKEN=
+# TELEGRAM_CHAT_ID=
+EOF
+    chmod 600 "$NOTIFY_CONFIG"
+    log_success "Created $NOTIFY_CONFIG"
+    log_info "Subscribe to ntfy topic on the phone: $topic"
 }
 
 configure_hooks_settings() {
@@ -422,6 +479,8 @@ do_install() {
     install_hg_extension "$force"
     configure_settings
     configure_hooks_settings
+    configure_notify_hook_settings
+    create_notify_config
     setup_chrome
 
     echo
@@ -457,12 +516,24 @@ do_uninstall() {
         fi
     done
 
-    local hook="$CLAUDE_DIR/hooks/save-model.sh"
-    if [ -f "$hook" ]; then
-        rm "$hook"
-        log_success "Removed: $hook"
-    else
-        log_warning "Not found: $hook"
+    local hook_script
+    for hook_script in "${CLAUDE_HOOK_SCRIPTS[@]}"; do
+        local hook="$CLAUDE_DIR/hooks/$hook_script"
+        if [ -f "$hook" ]; then
+            rm "$hook"
+            log_success "Removed: $hook"
+        else
+            log_warning "Not found: $hook"
+        fi
+    done
+
+    if [ -f "$settings" ] && jq -e '.hooks' "$settings" > /dev/null 2>&1; then
+        backup_file "$settings"
+        jq --arg cmd "$NOTIFY_HOOK_COMMAND" '
+            .hooks |= with_entries(.value |= map(select(all(.hooks[]?; .command != $cmd))))
+        ' "$settings" > "${settings}.tmp"
+        mv "${settings}.tmp" "$settings"
+        log_success "Removed notify-phone hook from settings.json (kept $NOTIFY_CONFIG)"
     fi
 
     for hook_file in "$GIT_HOOKS_TARGET"/*; do
@@ -520,11 +591,19 @@ do_status() {
         log_warning "alias 'cs': not configured"
     fi
 
-    local hook="$CLAUDE_DIR/hooks/save-model.sh"
-    if [ -f "$hook" ]; then
-        log_success "hooks/save-model.sh: installed"
+    local hook_script
+    for hook_script in "${CLAUDE_HOOK_SCRIPTS[@]}"; do
+        if [ -f "$CLAUDE_DIR/hooks/$hook_script" ]; then
+            log_success "hooks/$hook_script: installed"
+        else
+            log_warning "hooks/$hook_script: not installed"
+        fi
+    done
+
+    if [ -f "$NOTIFY_CONFIG" ]; then
+        log_success "phone notifications: $NOTIFY_CONFIG"
     else
-        log_warning "hooks/save-model.sh: not installed"
+        log_warning "phone notifications: no $NOTIFY_CONFIG"
     fi
 
     local git_hooks_path

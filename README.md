@@ -194,6 +194,38 @@ rm ~/.claude/.disable-malformed-toolcall-hook       # on
 
 Changes take effect from the next Claude Code session (or after opening `/hooks`).
 
+### Phone Notifications
+
+A hook (`scripts/hooks/notify-phone.sh`) that pings your phone when any running Claude Code session needs you — every terminal session, with or without Remote Control. It is registered on three events:
+
+| Event | Message |
+|---|---|
+| `Stop` + 30 s with no new prompt | 💬 Waiting for your reply |
+| `Notification` `permission_prompt` | 🔐 Needs permission |
+| `Notification` `elicitation_dialog` / `elicitation_url_dialog` | MCP server asks for input / to open a URL |
+| `Notification` `agent_needs_input` | 🙋 Background session needs input |
+| `UserPromptSubmit` | cancels a pending "waiting for your reply" |
+
+The built-in `idle_prompt` notification is ignored: Claude Code sends it after a fixed 60 s with no setting to shorten it. Instead the `Stop` handler waits `IDLE_NOTIFY_SECONDS` (30 by default) and reports unless, by then, you sent a prompt, a newer turn finished, or Claude resumed on its own (a `user`/`assistant` transcript entry newer than the stop). Unlike `idle_prompt` it cannot see typing that you have not sent yet, so reading a long reply for more than 30 s at the terminal still sends a push. `claude -p` runs never notify.
+
+Permission prompts and MCP dialogs keep Claude Code's own presence check: they fire only after about 6 s without typing. The title is `Claude · <project folder> · <session title>` — the `/rename` title, else the auto-generated one, omitted when the session has neither. Claude's own message text is never sent, because it can contain commands and file paths.
+
+"Waiting for your reply" is also skipped while the session is waiting for its own event rather than for you:
+- a **Monitor** or **background Bash** command is still running (children of the `claude` process started from a shell snapshot) — except a background server listening on a TCP port, which Claude does not wait on;
+- a **`/loop`** waits for its next wakeup (the last tool call in the transcript is `ScheduleWakeup` without `stop`).
+
+Delivery is configured in `~/.claude/notify.env` (the installer creates it with a random ntfy topic):
+
+```bash
+NTFY_TOPIC=claude-…                # ntfy: install the ntfy app, subscribe to this topic
+# NTFY_SERVER=https://ntfy.sh      # or a self-hosted server
+# IDLE_NOTIFY_SECONDS=30           # delay before "waiting for your reply"
+# TELEGRAM_BOT_TOKEN=123:abc       # Telegram: a bot from @BotFather
+# TELEGRAM_CHAT_ID=42              # your chat id (send the bot a message, then getUpdates)
+```
+
+Both channels can be on at once. Without the file the hook does nothing. The ntfy topic is public to anyone who knows its name, so keep it random. Sessions started before the hook was installed pick it up after `/hooks` or a restart.
+
 ## Requirements
 
 - [Claude Code](https://claude.ai/claude-code) CLI
@@ -218,7 +250,7 @@ cd claude-tools
 The installer will:
 1. Install the status line script (with usage modules) to `~/.claude/`
 2. Install the session picker to `~/.claude/session.sh` and add shell aliases: `cs` (picker) and `cn` (new session with pinned effort)
-3. Install the `save-model.sh` SessionStart hook and register it in `settings.json`
+3. Install the `save-model.sh` SessionStart hook and the `notify-phone.sh` phone-notification hook (Notification, Stop, UserPromptSubmit), register them in `settings.json` and create `~/.claude/notify.env` with a random ntfy topic
 4. Install git hooks to `~/.git-hooks/` and set global `core.hooksPath`
 5. Install the Mercurial extension to `~/.hgext/` and enable it in `~/.hgrc` (if `hg` is installed)
 6. Configure the status line in `settings.json`
@@ -263,6 +295,7 @@ Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Even
 ```bash
 bash tests/statusline_test.sh    # Run tests
 bash tests/hg_extension_test.sh  # Mercurial extension (isolated HGRCPATH)
+bash tests/notify_phone_test.sh  # Phone notifications hook (mocked curl)
 ~/.claude/statusline.sh --test   # Visual preview
 ~/.claude/statusline.sh --help   # Show help
 ~/.claude/session.sh --help      # Session picker help
