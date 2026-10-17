@@ -211,7 +211,9 @@ The built-in `idle_prompt` notification is ignored: Claude Code sends it after a
 Permission prompts and MCP dialogs keep Claude Code's own presence check: they fire only after about 6 s without typing. The title is `Claude · <project folder> · <session title>` — the `/rename` title, else the auto-generated one, omitted when the session has neither. Claude's own message text is never sent, because it can contain commands and file paths.
 
 "Waiting for your reply" is also skipped while the session is waiting for its own event rather than for you:
-- a **Monitor** or **background Bash** command is still running (children of the `claude` process started from a shell snapshot) — except a background server listening on a TCP port, which Claude does not wait on;
+- a **Monitor** is running (Monitors expire within an hour, so one is never stale);
+- a **background Bash** command started after your last prompt is running — Claude launched it and ended the turn to wait for it. Commands left over from earlier turns (a forgotten `until` loop, a long-lived listener) do not count, or they would mute the session for good. The prompt time is recorded by the `UserPromptSubmit` handler in `/tmp/claude-notify/`; until a session has one on record, background Bash commands do not count;
+- either way, a task listening on a TCP port (a dev server) is not something Claude waits on;
 - a **`/loop`** waits for its next wakeup (the last tool call in the transcript is `ScheduleWakeup` without `stop`).
 
 Delivery is configured in `~/.claude/notify.env` (the installer creates it with a random ntfy topic):

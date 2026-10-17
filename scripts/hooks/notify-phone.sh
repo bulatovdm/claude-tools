@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly NOTIFY_CONFIG="${CLAUDE_NOTIFY_CONFIG:-$HOME/.claude/notify.env}"
-readonly PENDING_REPLY_DIR="${CLAUDE_NOTIFY_PENDING_DIR:-/tmp/claude-notify-pending}"
+readonly NOTIFY_STATE_DIR="${CLAUDE_NOTIFY_STATE_DIR:-/tmp/claude-notify}"
 readonly DEFAULT_IDLE_NOTIFY_SECONDS=30
 readonly WAITING_FOR_REPLY="💬 Waiting for your reply"
 readonly DEFAULT_NTFY_SERVER="https://ntfy.sh"
@@ -58,13 +58,35 @@ listens_on_tcp() {
     lsof -a -nP -iTCP -sTCP:LISTEN -p "$pids" > /dev/null 2>&1
 }
 
-# Monitors and background Bash commands run as children of the claude
-# process; while one is alive, the session waits for its event, not for you.
-has_running_background_task() {
-    local claude_pid task_pid
+process_started_at() {
+    LC_ALL=C date -j -f "%a %b %e %T %Y" "$(LC_ALL=C ps -o lstart= -p "$1" | sed 's/ *$//')" +%s 2> /dev/null
+}
+
+# Monitor streams stdout to Claude Code over a socket; a background Bash
+# command writes it to a tasks/*.output file.
+is_monitor() {
+    [[ "$(lsof -a -p "$1" -d 1 -Ft 2> /dev/null | sed -n 's/^t//p')" != "REG" ]]
+}
+
+# Monitors expire within an hour, so a running one is always awaited. A
+# background Bash command has no limit: only one started after your last
+# prompt is what the session waits for; older ones are leftovers (a forgotten
+# until-loop, a long-lived listener) that would otherwise mute it for good.
+is_awaited_task() {
+    local task_pid=$1 last_prompt_at=$2
+    listens_on_tcp "$task_pid" && return 1
+    is_monitor "$task_pid" && return 0
+    [[ -n "$last_prompt_at" ]] || return 1
+    [[ "$(process_started_at "$task_pid")" -ge "$last_prompt_at" ]]
+}
+
+# Monitors and background Bash commands run as children of the claude process.
+has_awaited_background_task() {
+    local session_id=$1 claude_pid task_pid last_prompt_at
     claude_pid=$(find_claude_pid) || return 1
+    last_prompt_at=$(cat "$NOTIFY_STATE_DIR/$session_id.prompted" 2> /dev/null || true)
     for task_pid in $(pgrep -P "$claude_pid" -f "$BACKGROUND_TASK_MARKER"); do
-        listens_on_tcp "$task_pid" || return 0
+        is_awaited_task "$task_pid" "$last_prompt_at" && return 0
     done
     return 1
 }
@@ -93,7 +115,8 @@ find_session_title() {
 }
 
 session_waits_for_own_event() {
-    has_running_background_task || waits_for_loop_wakeup "$1"
+    local transcript=$1 session_id=$2
+    has_awaited_background_task "$session_id" || waits_for_loop_wakeup "$transcript"
 }
 
 # claude -p runs (scripts, automations) end with Stop too, but nobody waits on them.
@@ -161,10 +184,10 @@ handle_stop() {
     local cwd=$1 transcript=$2 session_id=$3
     is_print_mode && return 0
 
-    local pending_file="$PENDING_REPLY_DIR/$session_id" stopped_at token
+    local pending_file="$NOTIFY_STATE_DIR/$session_id.pending" stopped_at token
     stopped_at=$(date +%s)
     token="$stopped_at-$$"
-    mkdir -p "$PENDING_REPLY_DIR"
+    mkdir -p "$NOTIFY_STATE_DIR"
     echo "$token" > "$pending_file"
 
     sleep "${IDLE_NOTIFY_SECONDS:-$DEFAULT_IDLE_NOTIFY_SECONDS}"
@@ -172,12 +195,15 @@ handle_stop() {
     [[ "$(cat "$pending_file" 2>/dev/null)" == "$token" ]] || return 0
     rm -f "$pending_file"
     session_resumed_since "$transcript" "$stopped_at" && return 0
-    session_waits_for_own_event "$transcript" && return 0
+    session_waits_for_own_event "$transcript" "$session_id" && return 0
     notify "$cwd" "$transcript" "$WAITING_FOR_REPLY"
 }
 
-cancel_pending_reply() {
-    rm -f "$PENDING_REPLY_DIR/$1"
+record_prompt() {
+    local session_id=$1
+    mkdir -p "$NOTIFY_STATE_DIR"
+    rm -f "$NOTIFY_STATE_DIR/$session_id.pending"
+    date +%s > "$NOTIFY_STATE_DIR/$session_id.prompted"
 }
 
 main() {
@@ -201,7 +227,7 @@ main() {
         Stop)
             handle_stop "$cwd" "$transcript" "$session_id" ;;
         UserPromptSubmit)
-            cancel_pending_reply "$session_id" ;;
+            record_prompt "$session_id" ;;
     esac
 }
 

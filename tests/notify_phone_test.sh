@@ -11,7 +11,7 @@ FAIL=0
 WORK_DIR=$(mktemp -d)
 CURL_LOG="$WORK_DIR/curl.log"
 CONFIG="$WORK_DIR/notify.env"
-PENDING_DIR="$WORK_DIR/pending"
+STATE_DIR="$WORK_DIR/state"
 
 cleanup() {
     rm -rf "$WORK_DIR"
@@ -91,17 +91,22 @@ hook_payload() {
 }
 
 # Runs the hook as a child of a fake claude process that, when given a
-# background command, also runs it the way Claude Code runs Monitor/Bash tasks.
-# Extra arguments land in the fake claude's command line (e.g. -p).
+# background command, also runs it the way Claude Code runs Monitor/Bash tasks:
+# a Monitor's stdout is a pipe, a background Bash command's is a file
+# (set TASK_STDOUT). Extra arguments land in the fake claude's command line (e.g. -p).
 run_hook_in_session() {
     local event=$1 notification_type=$2 transcript=${3:-} background_command=${4:-}
     shift $(($# < 4 ? $# : 4))
     hook_payload "$event" "$notification_type" "$transcript" \
-        | PATH="$WORK_DIR/bin:$PATH" CLAUDE_NOTIFY_CONFIG="$CONFIG" CLAUDE_NOTIFY_PENDING_DIR="$PENDING_DIR" \
+        | PATH="$WORK_DIR/bin:$PATH" CLAUDE_NOTIFY_CONFIG="$CONFIG" CLAUDE_NOTIFY_STATE_DIR="$STATE_DIR" TASK_STDOUT="${TASK_STDOUT:-}" \
             "$FAKE_CLAUDE" -c '
             hook=$1 background_command=$2
             if [[ -n "$background_command" ]]; then
-                /bin/bash -c "$background_command; : shell-snapshots/snapshot-test" < /dev/null 2> /dev/null &
+                if [[ -n "$TASK_STDOUT" ]]; then
+                    /bin/bash -c "$background_command; : shell-snapshots/snapshot-test" < /dev/null > "$TASK_STDOUT" 2> /dev/null &
+                else
+                    /bin/bash -c "$background_command; : shell-snapshots/snapshot-test" < /dev/null > >(cat > /dev/null) 2> /dev/null &
+                fi
                 task_pid=$!
                 sleep 1
             fi
@@ -203,7 +208,25 @@ assert_equals "stays quiet when Claude resumes on its own" "$(sent_requests)" ""
 echo "sessions waiting for their own events:"
 reset_requests
 stop_turn "" "sleep 30"
-assert_equals "stays quiet while a monitor or background command runs" "$(sent_requests)" ""
+assert_equals "stays quiet while a monitor runs" "$(sent_requests)" ""
+
+readonly BACKGROUND_BASH_OUTPUT="$WORK_DIR/task.output"
+reset_requests
+rm -rf "$STATE_DIR"
+submit_prompt
+TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30"
+assert_equals "stays quiet for a background command started after your prompt" "$(sent_requests)" ""
+
+reset_requests
+mkdir -p "$STATE_DIR"
+echo $(($(date +%s) + 100)) > "$STATE_DIR/abc.prompted"
+TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30"
+assert_contains "ignores a leftover background command older than your prompt" "$(sent_requests)" "Waiting for your reply"
+
+reset_requests
+rm -rf "$STATE_DIR"
+TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30"
+assert_contains "ignores background commands until a prompt is on record" "$(sent_requests)" "Waiting for your reply"
 
 reset_requests
 run_hook_in_session Notification permission_prompt "" "sleep 30"
