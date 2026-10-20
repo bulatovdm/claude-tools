@@ -204,7 +204,7 @@ A hook (`scripts/hooks/notify-phone.sh`) that pings your phone when any running 
 | `Notification` `permission_prompt` | 🔐 Needs permission, or ❓ Claude asks you a question / 📋 Plan awaits your approval |
 | `Notification` `elicitation_dialog` / `elicitation_url_dialog` | MCP server asks for input / to open a URL |
 | `Notification` `agent_needs_input` | 🙋 Background session needs input |
-| `UserPromptSubmit` | cancels a pending "waiting for your reply" |
+| `UserPromptSubmit` | a prompt you typed cancels a pending "waiting for your reply" |
 
 The built-in `idle_prompt` notification is ignored: Claude Code sends it after a fixed 60 s with no setting to shorten it. Instead the `Stop` handler waits `IDLE_NOTIFY_SECONDS` (30 by default) and reports unless, by then, you sent a prompt, a newer turn finished, or Claude resumed on its own (a `user`/`assistant` transcript entry newer than the stop). Unlike `idle_prompt` it cannot see typing that you have not sent yet, so reading a long reply for more than 30 s at the terminal still sends a push. `claude -p` runs never notify.
 
@@ -217,6 +217,8 @@ Permission prompts and MCP dialogs keep Claude Code's own presence check: they f
 - a **`/loop`** waits for its next wakeup (the last tool call in the transcript is `ScheduleWakeup` without `stop`).
 
 A **Monitor** never holds the report: Claude Code uses it for a stream of events, which in practice is a listener re-armed every 30 minutes for as long as the session lives, and waiting for it would mute the session for good.
+
+`UserPromptSubmit` also fires for prompts nobody typed: Monitor events, finished background commands and subagent reports (`<task-notification>…`) and messages from other sessions (`<cross-session-message>`). Those are not your reply: they neither cancel a held report nor count as your last prompt.
 
 "Waiting for your reply" is sent **once per prompt**: turns that a listener's events start later do not repeat it until you reply. Permission prompts are not limited.
 

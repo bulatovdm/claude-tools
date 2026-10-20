@@ -84,12 +84,14 @@ assert_not_contains() {
 hook_payload() {
     local event=$1 notification_type=$2 transcript=$3
     jq -n --arg event "$event" --arg type "$notification_type" --arg transcript "$transcript" \
-        --arg cwd "${PAYLOAD_CWD:-/Users/me/Projects/mediteka}" '{
+        --arg cwd "${PAYLOAD_CWD:-/Users/me/Projects/mediteka}" \
+        --arg prompt "${PAYLOAD_PROMPT:-Продолжаем}" '{
         session_id: "abc",
         cwd: $cwd,
         transcript_path: $transcript,
         hook_event_name: $event,
         notification_type: $type,
+        prompt: $prompt,
         message: "Claude needs your permission to use Bash: cat secret-report.pdf"
     }'
 }
@@ -137,6 +139,14 @@ stop_turn() {
 
 submit_prompt() {
     run_hook_in_session UserPromptSubmit ""
+}
+
+# What Claude Code passes to UserPromptSubmit when a Monitor event wakes the session.
+deliver_monitor_event() {
+    PAYLOAD_PROMPT='<task-notification>
+<task-id>btbnw4d6i</task-id>
+<summary>Monitor event: "шина empirika"</summary>
+</task-notification>' run_hook_in_session UserPromptSubmit ""
 }
 
 sent_requests() {
@@ -211,6 +221,14 @@ stop_turn
 assert_equals "reports again after your next prompt" "$(count_sent "Waiting for your reply")" "2"
 
 reset_requests
+stop_turn
+deliver_monitor_event
+PAYLOAD_PROMPT='Another Claude session sent a message: <cross-session-message from="uds:/tmp/cc-socks/1.sock">hi</cross-session-message>' \
+    run_hook_in_session UserPromptSubmit ""
+stop_turn
+assert_equals "events and other sessions' messages are not your reply" "$(count_sent "Waiting for your reply")" "1"
+
+reset_requests
 stop_turn "" "" -p
 assert_equals "stays quiet for claude -p runs" "$(sent_requests)" ""
 
@@ -242,6 +260,15 @@ sleep 1.5
 submit_prompt
 wait
 assert_equals "a prompt while the report is held cancels it" "$(sent_requests)" ""
+
+reset_requests
+submit_prompt
+TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30" &
+sleep 1.5
+deliver_monitor_event
+wait
+assert_contains "a monitor event does not release a held report early" \
+    "$(sent_requests)" "a background task is still running"
 
 reset_requests
 mkdir -p "$STATE_DIR"

@@ -269,6 +269,19 @@ handle_stop() {
     notify "$cwd" "$transcript" "$body"
 }
 
+# UserPromptSubmit also fires for prompts nobody typed: Monitor events,
+# finished background commands and subagent reports (<task-notification>),
+# and messages from other sessions. Counting them as yours made every
+# listener event look like a reply.
+is_typed_prompt() {
+    local prompt=$1
+    prompt="${prompt#"${prompt%%[![:space:]]*}"}"
+    case "$prompt" in
+        "<task-notification"* | "<cross-session-message"* | "Another Claude session sent a message"*) return 1 ;;
+    esac
+    return 0
+}
+
 record_prompt() {
     local session_id=$1
     mkdir -p "$NOTIFY_STATE_DIR"
@@ -297,7 +310,9 @@ main() {
         Stop)
             handle_stop "$cwd" "$transcript" "$session_id" ;;
         UserPromptSubmit)
-            record_prompt "$session_id" ;;
+            if is_typed_prompt "$(jq -r '.prompt // empty' <<< "$input")"; then
+                record_prompt "$session_id"
+            fi ;;
     esac
 }
 
