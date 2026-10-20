@@ -155,10 +155,33 @@ send_telegram() {
         "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" > /dev/null
 }
 
+# The session's cwd follows every cd (packages/server/src), so the project is
+# taken from where the session started, resolved to its repository root. A
+# worktree is named after the repository it belongs to, plus its own name.
+describe_project() {
+    local project_dir=$1 git_paths common_dir top_level main_root
+    git_paths=$(git -C "$project_dir" rev-parse --path-format=absolute --git-common-dir --show-toplevel 2> /dev/null) || {
+        basename "$project_dir"
+        return 0
+    }
+    common_dir=$(sed -n 1p <<< "$git_paths")
+    top_level=$(sed -n 2p <<< "$git_paths")
+    main_root=$top_level
+    if [[ "$(basename "$common_dir")" == ".git" ]]; then
+        main_root=$(dirname "$common_dir")
+    fi
+
+    if [[ "$top_level" != "$main_root" ]]; then
+        echo "$(basename "$main_root") ($(basename "$top_level"))"
+    else
+        basename "$top_level"
+    fi
+}
+
 notify() {
     local cwd=$1 transcript=$2 body=$3
     local title session_title
-    title="Claude · $(basename "${cwd:-$PWD}")"
+    title="Claude · $(describe_project "${CLAUDE_PROJECT_DIR:-${cwd:-$PWD}}")"
     session_title=$(find_session_title "$transcript")
     if [[ -n "$session_title" ]]; then
         title="$title · $session_title"

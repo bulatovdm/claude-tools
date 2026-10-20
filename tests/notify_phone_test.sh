@@ -5,6 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$SCRIPT_DIR/scripts/hooks/notify-phone.sh"
 
+# Set inside Claude Code; the tests pass their own per case.
+unset CLAUDE_PROJECT_DIR
+
 PASS=0
 FAIL=0
 
@@ -80,9 +83,10 @@ assert_not_contains() {
 
 hook_payload() {
     local event=$1 notification_type=$2 transcript=$3
-    jq -n --arg event "$event" --arg type "$notification_type" --arg transcript "$transcript" '{
+    jq -n --arg event "$event" --arg type "$notification_type" --arg transcript "$transcript" \
+        --arg cwd "${PAYLOAD_CWD:-/Users/me/Projects/mediteka}" '{
         session_id: "abc",
-        cwd: "/Users/me/Projects/mediteka",
+        cwd: $cwd,
         transcript_path: $transcript,
         hook_event_name: $event,
         notification_type: $type,
@@ -99,6 +103,7 @@ run_hook_in_session() {
     shift $(($# < 4 ? $# : 4))
     hook_payload "$event" "$notification_type" "$transcript" \
         | PATH="$WORK_DIR/bin:$PATH" CLAUDE_NOTIFY_CONFIG="$CONFIG" CLAUDE_NOTIFY_STATE_DIR="$STATE_DIR" TASK_STDOUT="${TASK_STDOUT:-}" \
+            CLAUDE_PROJECT_DIR="${CLAUDE_PROJECT_DIR:-}" \
             "$FAKE_CLAUDE" -c '
             hook=$1 background_command=$2
             if [[ -n "$background_command" ]]; then
@@ -271,6 +276,28 @@ assert_contains "prefers the /rename title" "$(sent_requests)" '"title":"Claude 
 echo '{"type":"user","message":{"content":"hi"}}' > "$WORK_DIR/untitled.jsonl"
 notify_on permission_prompt "$WORK_DIR/untitled.jsonl"
 assert_contains "keeps the bare project when untitled" "$(sent_requests)" '"title":"Claude · mediteka"'
+
+echo "project name:"
+echo 'NTFY_TOPIC=t' > "$CONFIG"
+readonly REPO="$WORK_DIR/empirika"
+mkdir -p "$REPO/packages/server/src"
+git -C "$REPO" init -q
+git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$REPO" worktree add -q "$REPO/.claude/worktrees/client-place-pair" 2> /dev/null
+mkdir -p "$REPO/.claude/worktrees/client-place-pair/packages/web/src"
+
+PAYLOAD_CWD="$REPO/packages/server/src" CLAUDE_PROJECT_DIR="$REPO" notify_on permission_prompt
+assert_contains "names the project the session started in, not the cd target" "$(sent_requests)" '"title":"Claude · empirika"'
+
+PAYLOAD_CWD="$REPO/packages/server/src" notify_on permission_prompt
+assert_contains "resolves a subfolder cwd to the repository root" "$(sent_requests)" '"title":"Claude · empirika"'
+
+PAYLOAD_CWD="$REPO/.claude/worktrees/client-place-pair/packages/web/src" \
+    CLAUDE_PROJECT_DIR="$REPO/.claude/worktrees/client-place-pair" notify_on permission_prompt
+assert_contains "names a worktree after its repository" "$(sent_requests)" '"title":"Claude · empirika (client-place-pair)"'
+
+PAYLOAD_CWD="$WORK_DIR/plain/project" notify_on permission_prompt
+assert_contains "falls back to the folder name outside git" "$(sent_requests)" '"title":"Claude · project"'
 
 echo "telegram:"
 echo 'TELEGRAM_BOT_TOKEN=123:abc
