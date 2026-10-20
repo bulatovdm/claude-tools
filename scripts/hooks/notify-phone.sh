@@ -24,8 +24,9 @@ readonly ACTIVITY_SEARCH_TAIL_BYTES=2000000
 # idle_prompt is left out: Claude Code sends it after a fixed 60 s, so the
 # Stop handler below reports a waiting reply on its own, shorter timer.
 describe_notification() {
-    case "$1" in
-        permission_prompt)      echo "🔐 Needs permission" ;;
+    local notification_type=$1 transcript=$2
+    case "$notification_type" in
+        permission_prompt)      describe_permission_prompt "$transcript" ;;
         elicitation_dialog)     echo "📝 MCP server asks for input" ;;
         elicitation_url_dialog) echo "🌐 MCP server asks to open a URL" ;;
         agent_needs_input)      echo "🙋 Background session needs input" ;;
@@ -93,6 +94,29 @@ has_awaited_background_task() {
         is_awaited_task "$task_pid" "$last_prompt_at" && return 0
     done
     return 1
+}
+
+# Claude Code raises the same permission_prompt for a question with options
+# and for a plan to approve; the tool call still waiting for its result tells
+# them apart.
+describe_permission_prompt() {
+    case "$(find_unanswered_tool "$1")" in
+        AskUserQuestion) echo "❓ Claude asks you a question" ;;
+        ExitPlanMode)    echo "📋 Plan awaits your approval" ;;
+        *)               echo "🔐 Needs permission" ;;
+    esac
+}
+
+find_unanswered_tool() {
+    local transcript=$1
+    [[ -f "$transcript" ]] || return 0
+    tail -n "$TRANSCRIPT_TAIL_LINES" "$transcript" | jq -rs '
+        [.[] | select(.type == "user") | .message.content | arrays | .[]
+             | select(.type == "tool_result") | .tool_use_id] as $answered
+        | [.[] | select(.type == "assistant") | .message.content[]?
+               | select(.type == "tool_use")] | last
+        | select(. != null and (.id | IN($answered[]) | not)) | .name
+    ' 2> /dev/null || true
 }
 
 waits_for_loop_wakeup() {
@@ -197,7 +221,7 @@ notify() {
 
 handle_notification() {
     local cwd=$1 transcript=$2 notification_type=$3 body
-    body=$(describe_notification "$notification_type") || return 0
+    body=$(describe_notification "$notification_type" "$transcript") || return 0
     notify "$cwd" "$transcript" "$body"
 }
 

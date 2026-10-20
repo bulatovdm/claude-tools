@@ -280,6 +280,33 @@ reset_requests
 stop_turn "$(transcript_ending_with_tool '{"stop": true}')"
 assert_contains "reports once the /loop has stopped" "$(sent_requests)" "Waiting for your reply"
 
+echo "what the permission prompt is for:"
+echo 'NTFY_TOPIC=t' > "$CONFIG"
+transcript_with_pending_tool() {
+    local tool_name=$1 answered=${2:-}
+    jq -nc --arg name "$tool_name" '{type: "assistant", message: {content: [
+        {type: "text", text: "Before I go on"},
+        {type: "tool_use", id: "toolu_1", name: $name, input: {}}
+    ]}}' > "$WORK_DIR/pending-tool.jsonl"
+    if [[ -n "$answered" ]]; then
+        jq -nc '{type: "user", message: {content: [{type: "tool_result", tool_use_id: "toolu_1", content: "ok"}]}}' \
+            >> "$WORK_DIR/pending-tool.jsonl"
+    fi
+    echo "$WORK_DIR/pending-tool.jsonl"
+}
+
+notify_on permission_prompt "$(transcript_with_pending_tool AskUserQuestion)"
+assert_contains "names a question with options" "$(sent_requests)" "Claude asks you a question"
+
+notify_on permission_prompt "$(transcript_with_pending_tool ExitPlanMode)"
+assert_contains "names a plan to approve" "$(sent_requests)" "Plan awaits your approval"
+
+notify_on permission_prompt "$(transcript_with_pending_tool Bash)"
+assert_contains "keeps a tool permission as such" "$(sent_requests)" "Needs permission"
+
+notify_on permission_prompt "$(transcript_with_pending_tool AskUserQuestion answered)"
+assert_contains "ignores a question already answered" "$(sent_requests)" "Needs permission"
+
 echo "session title:"
 echo 'NTFY_TOPIC=t' > "$CONFIG"
 printf '%s\n' \

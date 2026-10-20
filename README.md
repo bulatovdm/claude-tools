@@ -201,12 +201,14 @@ A hook (`scripts/hooks/notify-phone.sh`) that pings your phone when any running 
 | Event | Message |
 |---|---|
 | `Stop` + 30 s with no new prompt | 💬 Waiting for your reply |
-| `Notification` `permission_prompt` | 🔐 Needs permission |
+| `Notification` `permission_prompt` | 🔐 Needs permission, or ❓ Claude asks you a question / 📋 Plan awaits your approval |
 | `Notification` `elicitation_dialog` / `elicitation_url_dialog` | MCP server asks for input / to open a URL |
 | `Notification` `agent_needs_input` | 🙋 Background session needs input |
 | `UserPromptSubmit` | cancels a pending "waiting for your reply" |
 
 The built-in `idle_prompt` notification is ignored: Claude Code sends it after a fixed 60 s with no setting to shorten it. Instead the `Stop` handler waits `IDLE_NOTIFY_SECONDS` (30 by default) and reports unless, by then, you sent a prompt, a newer turn finished, or Claude resumed on its own (a `user`/`assistant` transcript entry newer than the stop). Unlike `idle_prompt` it cannot see typing that you have not sent yet, so reading a long reply for more than 30 s at the terminal still sends a push. `claude -p` runs never notify.
+
+Claude Code raises the same `permission_prompt` for a question with options (`AskUserQuestion`) and for a plan to approve (`ExitPlanMode`); the hook tells them apart by the tool call in the transcript that is still waiting for its result.
 
 Permission prompts and MCP dialogs keep Claude Code's own presence check: they fire only after about 6 s without typing. The title is `Claude · <project> · <session title>`. The project is the repository root of the folder the session started in (`CLAUDE_PROJECT_DIR`), not the current `cwd`, which follows every `cd` into `packages/server/src`; a git worktree shows as `<repository> (<worktree>)`, e.g. `empirika (client-place-pair)` for `empirika/.claude/worktrees/client-place-pair`; outside git it is the folder name. The session title is the `/rename` one, else the auto-generated one, omitted when the session has neither. Claude's own message text is never sent, because it can contain commands and file paths.
 
