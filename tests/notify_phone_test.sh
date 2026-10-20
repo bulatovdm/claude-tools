@@ -118,7 +118,7 @@ run_hook_in_session() {
             /bin/bash "$hook"
             if [[ -n "${task_pid:-}" ]]; then
                 pkill -P "$task_pid"
-                kill "$task_pid"
+                kill "$task_pid" 2> /dev/null
             fi
             true
         ' fake-claude "$HOOK" "$background_command" "$@"
@@ -143,8 +143,10 @@ sent_requests() {
     cat "$CURL_LOG" 2>/dev/null || true
 }
 
+# A fresh session: no requests sent, no prompt or earlier report on record.
 reset_requests() {
     rm -f "$CURL_LOG"
+    rm -rf "$STATE_DIR"
 }
 
 count_sent() {
@@ -180,7 +182,8 @@ assert_equals "does nothing without a config" "$(sent_requests)" ""
 
 echo "waiting for a reply after a turn:"
 echo 'NTFY_TOPIC=t
-IDLE_NOTIFY_SECONDS=1' > "$CONFIG"
+IDLE_NOTIFY_SECONDS=1
+BACKGROUND_WAIT_LIMIT_SECONDS=2' > "$CONFIG"
 reset_requests
 stop_turn
 assert_contains "reports a finished turn after the delay" "$(sent_requests)" "Waiting for your reply"
@@ -200,6 +203,14 @@ wait
 assert_equals "a newer turn replaces the pending report" "$(count_sent "Waiting for your reply")" "1"
 
 reset_requests
+stop_turn
+stop_turn
+assert_equals "reports once until you reply" "$(count_sent "Waiting for your reply")" "1"
+submit_prompt
+stop_turn
+assert_equals "reports again after your next prompt" "$(count_sent "Waiting for your reply")" "2"
+
+reset_requests
 stop_turn "" "" -p
 assert_equals "stays quiet for claude -p runs" "$(sent_requests)" ""
 
@@ -212,34 +223,45 @@ assert_equals "stays quiet when Claude resumes on its own" "$(sent_requests)" ""
 
 echo "sessions waiting for their own events:"
 reset_requests
+submit_prompt
 stop_turn "" "sleep 30"
-assert_equals "stays quiet while a monitor runs" "$(sent_requests)" ""
+assert_contains "a monitor (a listener, re-armed for good) does not hold the report" "$(sent_requests)" "Waiting for your reply"
+assert_not_contains "and is not mentioned in it" "$(sent_requests)" "background task"
 
 readonly BACKGROUND_BASH_OUTPUT="$WORK_DIR/task.output"
 reset_requests
-rm -rf "$STATE_DIR"
 submit_prompt
 TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30"
-assert_equals "stays quiet for a background command started after your prompt" "$(sent_requests)" ""
+assert_contains "holds the report for a background command started after your prompt, up to the limit" \
+    "$(sent_requests)" "a background task is still running"
+
+reset_requests
+submit_prompt
+TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30" &
+sleep 1.5
+submit_prompt
+wait
+assert_equals "a prompt while the report is held cancels it" "$(sent_requests)" ""
 
 reset_requests
 mkdir -p "$STATE_DIR"
 echo $(($(date +%s) + 100)) > "$STATE_DIR/abc.prompted"
 TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30"
 assert_contains "ignores a leftover background command older than your prompt" "$(sent_requests)" "Waiting for your reply"
+assert_not_contains "and reports without holding for it" "$(sent_requests)" "background task"
 
 reset_requests
-rm -rf "$STATE_DIR"
 TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "sleep 30"
-assert_contains "ignores background commands until a prompt is on record" "$(sent_requests)" "Waiting for your reply"
+assert_not_contains "ignores background commands until a prompt is on record" "$(sent_requests)" "background task"
 
 reset_requests
 run_hook_in_session Notification permission_prompt "" "sleep 30"
 assert_contains "still reports permission prompts during a monitor" "$(sent_requests)" "Needs permission"
 
 reset_requests
-stop_turn "" "python3 -m http.server 0 --bind 127.0.0.1 > /dev/null 2>&1"
-assert_contains "ignores a background server: Claude does not wait on it" "$(sent_requests)" "Waiting for your reply"
+submit_prompt
+TASK_STDOUT="$BACKGROUND_BASH_OUTPUT" stop_turn "" "python3 -m http.server 0 --bind 127.0.0.1 > /dev/null 2>&1"
+assert_not_contains "ignores a background server: Claude does not wait on it" "$(sent_requests)" "background task"
 
 transcript_ending_with_tool() {
     local tool_input=$1

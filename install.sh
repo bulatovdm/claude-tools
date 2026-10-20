@@ -354,6 +354,8 @@ NTFY_TOPIC=$topic
 
 # Seconds after Claude finishes a reply before "waiting for your reply" is sent.
 # IDLE_NOTIFY_SECONDS=30
+# Longest hold while a background command Claude waits on is still running.
+# BACKGROUND_WAIT_LIMIT_SECONDS=900
 
 # Telegram (optional): a bot from @BotFather and your chat id.
 # TELEGRAM_BOT_TOKEN=

@@ -5,7 +5,10 @@ set -euo pipefail
 readonly NOTIFY_CONFIG="${CLAUDE_NOTIFY_CONFIG:-$HOME/.claude/notify.env}"
 readonly NOTIFY_STATE_DIR="${CLAUDE_NOTIFY_STATE_DIR:-/tmp/claude-notify}"
 readonly DEFAULT_IDLE_NOTIFY_SECONDS=30
+readonly DEFAULT_BACKGROUND_WAIT_LIMIT_SECONDS=900
+readonly BACKGROUND_RECHECK_SECONDS=15
 readonly WAITING_FOR_REPLY="💬 Waiting for your reply"
+readonly WAITING_WITH_TASK_RUNNING="💬 Waiting for your reply (a background task is still running)"
 readonly DEFAULT_NTFY_SERVER="https://ntfy.sh"
 readonly REQUEST_TIMEOUT_SECONDS=10
 readonly BACKGROUND_TASK_MARKER="shell-snapshots/snapshot-"
@@ -68,15 +71,16 @@ is_monitor() {
     [[ "$(lsof -a -p "$1" -d 1 -Ft 2> /dev/null | sed -n 's/^t//p')" != "REG" ]]
 }
 
-# Monitors expire within an hour, so a running one is always awaited. A
-# background Bash command has no limit: only one started after your last
-# prompt is what the session waits for; older ones are leftovers (a forgotten
-# until-loop, a long-lived listener) that would otherwise mute it for good.
+# Claude Code's own guidance: one awaited event is a background Bash command,
+# a Monitor is a stream of events, in practice a listener re-armed every
+# 30 min, which would mute the session for good. Only a Bash command started
+# after your last prompt counts; older ones are leftovers (a forgotten
+# until-loop). A task listening on TCP (a dev server) is never awaited.
 is_awaited_task() {
     local task_pid=$1 last_prompt_at=$2
-    listens_on_tcp "$task_pid" && return 1
-    is_monitor "$task_pid" && return 0
     [[ -n "$last_prompt_at" ]] || return 1
+    is_monitor "$task_pid" && return 1
+    listens_on_tcp "$task_pid" && return 1
     [[ "$(process_started_at "$task_pid")" -ge "$last_prompt_at" ]]
 }
 
@@ -114,10 +118,6 @@ find_session_title() {
     echo "$title"
 }
 
-session_waits_for_own_event() {
-    local transcript=$1 session_id=$2
-    has_awaited_background_task "$session_id" || waits_for_loop_wakeup "$transcript"
-}
 
 # claude -p runs (scripts, automations) end with Stop too, but nobody waits on them.
 is_print_mode() {
@@ -202,12 +202,17 @@ handle_notification() {
 }
 
 # The pending file holds a token of the latest Stop; a newer Stop or your
-# prompt replaces or removes it, which cancels the earlier wait.
+# prompt replaces or removes it, which cancels the earlier wait. While a
+# background command Claude waits on runs, the report is held back: when it
+# ends, Claude resumes and the next Stop reports instead. A command still
+# running after the limit gets reported anyway.
 handle_stop() {
     local cwd=$1 transcript=$2 session_id=$3
     is_print_mode && return 0
 
-    local pending_file="$NOTIFY_STATE_DIR/$session_id.pending" stopped_at token
+    local pending_file="$NOTIFY_STATE_DIR/$session_id.pending"
+    local notified_file="$NOTIFY_STATE_DIR/$session_id.notified"
+    local stopped_at token
     stopped_at=$(date +%s)
     token="$stopped_at-$$"
     mkdir -p "$NOTIFY_STATE_DIR"
@@ -215,17 +220,35 @@ handle_stop() {
 
     sleep "${IDLE_NOTIFY_SECONDS:-$DEFAULT_IDLE_NOTIFY_SECONDS}"
 
-    [[ "$(cat "$pending_file" 2>/dev/null)" == "$token" ]] || return 0
+    local wait_limit=${BACKGROUND_WAIT_LIMIT_SECONDS:-$DEFAULT_BACKGROUND_WAIT_LIMIT_SECONDS}
+    local body=$WAITING_FOR_REPLY waited remaining
+    while true; do
+        [[ "$(cat "$pending_file" 2> /dev/null)" == "$token" ]] || return 0
+        session_resumed_since "$transcript" "$stopped_at" && return 0
+        waits_for_loop_wakeup "$transcript" && return 0
+        has_awaited_background_task "$session_id" || break
+
+        waited=$(($(date +%s) - stopped_at))
+        if ((waited >= wait_limit)); then
+            body=$WAITING_WITH_TASK_RUNNING
+            break
+        fi
+        remaining=$((wait_limit - waited))
+        sleep $((remaining < BACKGROUND_RECHECK_SECONDS ? remaining : BACKGROUND_RECHECK_SECONDS))
+    done
+
     rm -f "$pending_file"
-    session_resumed_since "$transcript" "$stopped_at" && return 0
-    session_waits_for_own_event "$transcript" "$session_id" && return 0
-    notify "$cwd" "$transcript" "$WAITING_FOR_REPLY"
+    # One report per prompt: turns that a listener's events start later
+    # would otherwise repeat it several times an hour.
+    [[ -f "$notified_file" ]] && return 0
+    touch "$notified_file"
+    notify "$cwd" "$transcript" "$body"
 }
 
 record_prompt() {
     local session_id=$1
     mkdir -p "$NOTIFY_STATE_DIR"
-    rm -f "$NOTIFY_STATE_DIR/$session_id.pending"
+    rm -f "$NOTIFY_STATE_DIR/$session_id.pending" "$NOTIFY_STATE_DIR/$session_id.notified"
     date +%s > "$NOTIFY_STATE_DIR/$session_id.prompted"
 }
 

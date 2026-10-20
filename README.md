@@ -210,11 +210,13 @@ The built-in `idle_prompt` notification is ignored: Claude Code sends it after a
 
 Permission prompts and MCP dialogs keep Claude Code's own presence check: they fire only after about 6 s without typing. The title is `Claude · <project> · <session title>`. The project is the repository root of the folder the session started in (`CLAUDE_PROJECT_DIR`), not the current `cwd`, which follows every `cd` into `packages/server/src`; a git worktree shows as `<repository> (<worktree>)`, e.g. `empirika (client-place-pair)` for `empirika/.claude/worktrees/client-place-pair`; outside git it is the folder name. The session title is the `/rename` one, else the auto-generated one, omitted when the session has neither. Claude's own message text is never sent, because it can contain commands and file paths.
 
-"Waiting for your reply" is also skipped while the session is waiting for its own event rather than for you:
-- a **Monitor** is running (Monitors expire within an hour, so one is never stale);
-- a **background Bash** command started after your last prompt is running — Claude launched it and ended the turn to wait for it. Commands left over from earlier turns (a forgotten `until` loop, a long-lived listener) do not count, or they would mute the session for good. The prompt time is recorded by the `UserPromptSubmit` handler in `/tmp/claude-notify/`; until a session has one on record, background Bash commands do not count;
-- either way, a task listening on a TCP port (a dev server) is not something Claude waits on;
+"Waiting for your reply" is held back while the session waits for its own event rather than for you:
+- a **background Bash** command started after your last prompt is running — Claude launched it and ended the turn to wait for it (a deploy, a build). When it ends Claude resumes, and the next turn reports instead; a command still running after `BACKGROUND_WAIT_LIMIT_SECONDS` (15 min) is reported anyway, marked "a background task is still running". Commands left over from earlier turns (a forgotten `until` loop) and tasks listening on a TCP port (a dev server) do not count; neither do any until a session has a prompt on record (the `UserPromptSubmit` handler writes it to `/tmp/claude-notify/`);
 - a **`/loop`** waits for its next wakeup (the last tool call in the transcript is `ScheduleWakeup` without `stop`).
+
+A **Monitor** never holds the report: Claude Code uses it for a stream of events, which in practice is a listener re-armed every 30 minutes for as long as the session lives, and waiting for it would mute the session for good.
+
+"Waiting for your reply" is sent **once per prompt**: turns that a listener's events start later do not repeat it until you reply. Permission prompts are not limited.
 
 Delivery is configured in `~/.claude/notify.env` (the installer creates it with a random ntfy topic):
 
@@ -222,6 +224,7 @@ Delivery is configured in `~/.claude/notify.env` (the installer creates it with 
 NTFY_TOPIC=claude-…                # ntfy: install the ntfy app, subscribe to this topic
 # NTFY_SERVER=https://ntfy.sh      # or a self-hosted server
 # IDLE_NOTIFY_SECONDS=30           # delay before "waiting for your reply"
+# BACKGROUND_WAIT_LIMIT_SECONDS=900 # longest hold for a background command
 # TELEGRAM_BOT_TOKEN=123:abc       # Telegram: a bot from @BotFather
 # TELEGRAM_CHAT_ID=42              # your chat id (send the bot a message, then getUpdates)
 ```
