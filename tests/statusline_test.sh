@@ -655,6 +655,7 @@ run_fetch_via_chrome() {
         USAGE_ERROR_FILE='$error_file'
         USAGE_LOG_FILE='/dev/null'
         chrome_is_running() { return 0; }
+        chrome_instance_count() { echo '1'; }
         addressed_chrome_window_count() { echo '1'; }
         open_claude_tab() { echo 'OPENED_TAB'; }
         find_claude_tab_and_execute_js() { cat <<'TAB_RESULT'
@@ -692,6 +693,7 @@ run_fetch_with_windows() {
     local window_count=$1
     local instance_count=$2
     local error_file=$3
+    local tab_result=${4:-}
     bash -c "
         source '$TEST_CHROME'
         USAGE_CACHE_FILE='${error_file%.error}'
@@ -701,7 +703,7 @@ run_fetch_with_windows() {
         chrome_instance_count() { echo '$instance_count'; }
         addressed_chrome_window_count() { echo '$window_count'; }
         open_claude_tab() { echo 'OPENED_TAB'; }
-        find_claude_tab_and_execute_js() { echo ''; }
+        find_claude_tab_and_execute_js() { echo '$tab_result'; }
         fetch_usage_via_chrome || echo 'FETCH_FAILED'
     "
 }
@@ -719,6 +721,16 @@ assert_not_contains "windowless Chrome opens no tab" "$result" "OPENED_TAB"
 
 result=$(run_fetch_with_windows 3 1 "$WINDOW_ERROR")
 assert_contains "windows present still looks for a tab" "$result" "OPENED_TAB"
+
+result=$(run_fetch_with_windows 1 2 "$WINDOW_ERROR")
+assert_contains "second instance with a window and no tab reports Chrome busy" "$(cat "$WINDOW_ERROR")" "Chrome busy"
+assert_not_contains "second instance with a window gets no claude.ai tab" "$result" "OPENED_TAB"
+
+result=$(run_fetch_with_windows 1 2 "$WINDOW_ERROR" "$JS_OFF")
+assert_contains "blocked JS beside a second instance reports Chrome busy" "$(cat "$WINDOW_ERROR")" "Chrome busy"
+
+result=$(run_fetch_with_windows 1 2 "$WINDOW_ERROR" '{"five_hour":{"utilization":42}}')
+assert_contains "second instance answering with data still succeeds" "$result" '"utilization":42'
 
 rm -f "$WINDOW_ERROR"
 
@@ -753,10 +765,8 @@ result=$(run_func "merge_usage_sources '||||||||' '$CHROME_LINE'")
 assert_equals "chrome fills in when stdin carries no limits" "$result" "37|70|12|2026-09-17T17:00:00|2026-09-17T23:00:00|2026-09-18T01:00:00|89|2026-09-17T23:00:00"
 
 result=$(run_func "merge_usage_sources '$NATIVE_LINE' 'error:Chrome busy|||||||'")
-assert_equals "an unreachable chrome leaves native limits intact" "$result" "24|74||2026-09-17T18:10:00|2026-09-17T19:00:00|||"
-
-result=$(run_func "merge_usage_sources '$NATIVE_LINE' 'error:Chrome busy|||||||'")
-assert_not_contains "chrome error stays quiet while stdin has limits" "$result" "error:"
+assert_equals "an unreachable chrome keeps native limits and names the reason" "$result" "24|74||2026-09-17T18:10:00|2026-09-17T19:00:00||||Chrome busy"
+assert_not_contains "chrome error does not blank stdin limits" "$result" "error:"
 
 result=$(run_func "merge_usage_sources '||||||||' 'error:Chrome busy|||||||'")
 assert_contains "chrome error surfaces when it was the only source" "$result" "error:Chrome busy"
@@ -917,6 +927,20 @@ assert_contains "error shows in full output" "$full_output" "open Chrome"
 assert_contains "error shows question marks" "$full_output" "5h: ?"
 
 rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
+
+echo ""
+echo "[Integration — Chrome error beside stdin limits]"
+
+full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Opus"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
+    bash -c "
+        STATUSLINE_SHOW_FABLE=1
+        source '$TEST_SCRIPT'
+        get_usage_limits() { merge_usage_sources '24|74||||||' 'error:Chrome busy|||||||'; }
+        main
+    " | strip_colors)
+assert_contains "stdin limits still render beside a chrome error" "$full_output" "5h: 24%"
+assert_contains "blank fable row is explained" "$full_output" "Fable: ?"
+assert_contains "chrome error is shown while stdin has limits" "$full_output" "⚠ Chrome busy"
 
 echo ""
 echo "[Project segment]"

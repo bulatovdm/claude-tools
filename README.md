@@ -87,21 +87,21 @@ so Chrome is consulted for those rows alone — and skipped entirely when neithe
 `STATUSLINE_SHOW_SONNET` nor `STATUSLINE_SHOW_FABLE` is enabled. Chrome data is
 cached for 5 minutes; a Chrome failure never blanks the stdin-backed rows.
 
-If no claude.ai tab is found, one is automatically opened. Every claude.ai tab is tried in turn — "Allow JavaScript from Apple Events" is a per-profile Chrome setting, so a claude.ai tab in a profile where it is off no longer blocks a working tab in another profile.
+If no claude.ai tab is found, one is automatically opened — unless a second Chrome instance is running, since the tab could land in that instance instead. Every claude.ai tab is tried in turn — "Allow JavaScript from Apple Events" is a per-profile Chrome setting, so a claude.ai tab in a profile where it is off no longer blocks a working tab in another profile.
 
 Error states are shown in the status bar:
 
 | Status | Meaning |
 |--------|---------|
 | `⚠ open Chrome` | Chrome is not running |
-| `⚠ open claude.ai` | No claude.ai tab found (auto-opens one) |
+| `⚠ open claude.ai` | No claude.ai tab found (auto-opens one when Chrome is the only instance) |
 | `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled in every profile with a claude.ai tab |
-| `⚠ Chrome busy` | Apple Events are being answered by a second, windowless Chrome instance |
+| `⚠ Chrome busy` | A second Chrome instance is running and Apple Events may be reaching it instead of the real browser |
 | `⚠ API error` | claude.ai API returned an error |
 
-These states only concern the Chrome-backed rows, and they surface as a warning
-only when stdin carried no limits either — otherwise `Sonnet`/`Fable` simply show
-`?` while `5h` and `Week` stay live. A failed refresh does not blank the Chrome
+These states only concern the Chrome-backed rows. When stdin still carries limits,
+`5h` and `Week` stay live while `Sonnet`/`Fable` show `?` and the warning at the end
+of the line says why. A failed refresh does not blank the Chrome
 rows right away: the last known values keep showing for 30 minutes
 (`USAGE_CACHE_GRACE_AGE`) before the error replaces them.
 
@@ -116,10 +116,14 @@ answers the events instead of the real browser. The common source is a headless 
 ```
 
 While that runs, the status line reaches an instance with no windows and no
-claude.ai session. The status line now detects this and keeps the last values
-instead of opening tabs in the wrong instance. To avoid it entirely, render with a
-binary that has its own bundle id — `chrome-headless-shell` or Chrome for Testing —
-rather than the installed Google Chrome.
+claude.ai session. A visible test browser started on its own profile
+(`--user-data-dir=...`) does the same, only with a window of its own. With more than
+one instance running, a missing claude.ai tab or blocked JS is reported as
+`Chrome busy` and no tab is opened, so claude.ai never ends up in a logged-out test
+profile. Closing that browser's window is not enough — quit it (Cmd+Q), since a
+windowless instance keeps answering. To avoid it entirely, use a binary that has its
+own bundle id — `chrome-headless-shell` or Chrome for Testing — rather than the
+installed Google Chrome.
 
 ### Session Picker
 

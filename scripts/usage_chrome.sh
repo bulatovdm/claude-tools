@@ -97,10 +97,11 @@ fetch_usage_via_chrome() {
 
     # Without this, a hijacked event looks like "no claude.ai tab" and we would
     # open one in the wrong instance — invisible, logged out, and JS-disabled.
-    local window_count
+    local instance_count window_count
+    instance_count=$(chrome_instance_count)
     window_count=$(addressed_chrome_window_count)
     if [[ "$window_count" == "0" ]]; then
-        if (( $(chrome_instance_count) > 1 )); then
+        if (( instance_count > 1 )); then
             log_event "chrome: apple events answered by a windowless second instance"
             set_error "Chrome busy"
         else
@@ -124,7 +125,20 @@ fetch_usage_via_chrome() {
         xhr2.responseText;
     ")
 
-    if echo "$result" | grep -q "Executing JavaScript through AppleScript is turned off"; then
+    local js_blocked=0
+    echo "$result" | grep -q "Executing JavaScript through AppleScript is turned off" && js_blocked=1
+
+    # A second instance with a window of its own (a test browser on a separate
+    # profile) passes the windowless check, so a missing tab or blocked JS may
+    # describe that instance rather than the real browser — and a tab opened
+    # there lands in a profile that is not signed in to claude.ai
+    if (( instance_count > 1 )) && [[ -z "$result" || "$js_blocked" == "1" ]]; then
+        log_event "chrome: no usable claude.ai tab while a second instance runs"
+        set_error "Chrome busy"
+        return 1
+    fi
+
+    if [[ "$js_blocked" == "1" ]]; then
         log_event "chrome: JS from Apple Events disabled"
         set_error "enable Chrome JS"
         return 1

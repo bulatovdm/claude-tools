@@ -479,13 +479,17 @@ merge_usage_sources() {
     local five_reset="${n_five_reset:-$c_five_reset}"
     local week_reset="${n_week_reset:-$c_week_reset}"
 
-    # An unreachable browser is only worth reporting when it was the only source
     if [[ -n "$chrome_error" && -z "${five}${week}" ]]; then
         echo "${chrome_error}|||||||"
         return
     fi
 
-    echo "${five}|${week}|${c_sonnet}|${five_reset}|${week_reset}|${c_sonnet_reset}|${c_fable}|${c_fable_reset}"
+    local merged="${five}|${week}|${c_sonnet}|${five_reset}|${week_reset}|${c_sonnet_reset}|${c_fable}|${c_fable_reset}"
+
+    # Stdin still covers 5h and weekly, but the model rows go blank, so the
+    # reason rides along in a ninth field instead of replacing the limits
+    [[ -n "$chrome_error" ]] && merged="${merged}|${chrome_error#error:}"
+    echo "$merged"
 }
 
 usage_line_is_empty() {
@@ -669,7 +673,6 @@ main() {
     local fable_reset
     local effort_level
     local thinking_enabled
-    local rest
 
     input=$(cat)
     used=$(parse_used_percentage "$input")
@@ -686,20 +689,9 @@ main() {
         error_msg="${error_msg#error:}"
         usage_data="|||||||"
     fi
-    five_hour="${usage_data%%|*}"
-    rest="${usage_data#*|}"
-    seven_day="${rest%%|*}"
-    rest="${rest#*|}"
-    sonnet="${rest%%|*}"
-    rest="${rest#*|}"
-    five_hour_reset="${rest%%|*}"
-    rest="${rest#*|}"
-    seven_day_reset="${rest%%|*}"
-    rest="${rest#*|}"
-    sonnet_reset="${rest%%|*}"
-    rest="${rest#*|}"
-    fable="${rest%%|*}"
-    fable_reset="${rest#*|}"
+    local model_rows_error
+    IFS='|' read -r five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset fable fable_reset model_rows_error <<< "$usage_data"
+    error_msg="${error_msg:-$model_rows_error}"
 
     format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg" "$fable" "$fable_reset" "$effort_level" "$thinking_enabled"
     print_project_segment "$input"
