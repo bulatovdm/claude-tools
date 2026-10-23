@@ -174,7 +174,7 @@ install_alias() {
     add_alias_line "$shell_rc" "cs" "alias cs='~/.claude/session.sh'" "Claude Code session picker"
     # New sessions pinned to a fixed effort level, so leftovers written to the
     # global settings.json by other sessions never leak into a fresh start
-    add_alias_line "$shell_rc" "cn" "alias cn='claude --effort ${CLAUDE_NEW_SESSION_EFFORT:-high}'" "Claude Code new session with pinned effort"
+    add_alias_line "$shell_rc" "cn" "alias cn='claude --effort ${CLAUDE_NEW_SESSION_EFFORT:-medium}'" "Claude Code new session with pinned effort"
 }
 
 add_alias_line() {

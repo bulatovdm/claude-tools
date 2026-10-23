@@ -35,7 +35,7 @@ Each observed value is cached per session in `~/.claude/statusline-cache/` (`eff
 The fix lives in the launchers, using the session-scoped `--effort` flag (which never touches the global file):
 
 - **Resume**: the session picker (`cs`) reads the session's actual level from its transcript (`~/.claude/projects/*/${session_id}.jsonl` records `"effort"` on every assistant entry) and launches `claude --effort <level> --resume <id>`.
-- **New sessions**: the `cn` alias launches `claude --effort high`, so a fresh session always starts at a known level regardless of what other sessions wrote to the global settings.
+- **New sessions**: the `cn` alias launches `claude --effort medium`, so a fresh session always starts at a known level regardless of what other sessions wrote to the global settings.
 
 Thinking has no launch flag or environment variable, so its only handle is the global `alwaysThinkingEnabled`: `cs` restores it from the statusline's `~/.claude/statusline-cache/thinking-${session_id}` cache (transcripts record nothing about thinking, so this cache is the only per-session record of it; sessions that never rendered the statusline have nothing to restore from).
 
@@ -139,7 +139,7 @@ cs -p /path/to/repo   # sessions for a specific project
 
 Reads `~/.claude/history.jsonl`, groups prompts by session, shows date/duration/message count/preview. Select a session by number → resumes it with the session's own effort level (`claude --effort <level> --resume <session-id>`).
 
-Before launching, reads the session's own effort level from its transcript and passes it via `claude --effort` (session-scoped, the global settings stay untouched); thinking state is restored into `~/.claude/settings.json` as best-effort. See [Effort leaks between sessions](#status-line) above. For new sessions, the `cn` alias (`claude --effort high`) gives every fresh start a known level.
+Before launching, reads the session's own effort level from its transcript and passes it via `claude --effort` (session-scoped, the global settings stay untouched); thinking state is restored into `~/.claude/settings.json` as best-effort. See [Effort leaks between sessions](#status-line) above. For new sessions, the `cn` alias (`claude --effort medium`) gives every fresh start a known level.
 
 If `fzf` is installed, uses fuzzy finder for selection. Otherwise falls back to a numbered list.
 
@@ -269,7 +269,7 @@ The installer will:
 6. Configure the status line in `settings.json`
 7. Open Chrome with claude.ai if needed and check that "Allow JavaScript from Apple Events" is enabled
 
-The default effort level for the `cn` alias is `high`; set `CLAUDE_NEW_SESSION_EFFORT` when running the installer to pick another (e.g. `CLAUDE_NEW_SESSION_EFFORT=xhigh ./install.sh`).
+The default effort level for the `cn` alias is `medium`; set `CLAUDE_NEW_SESSION_EFFORT` when running the installer to pick another (e.g. `CLAUDE_NEW_SESSION_EFFORT=xhigh ./install.sh`).
 
 ### Manual Install
 
