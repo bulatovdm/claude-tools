@@ -12,8 +12,18 @@ scripts/hg-extensions/       - Расширение Mercurial с той же ч�
 tests/hg_extension_test.sh   - Тесты hg-расширения (изолированный HGRCPATH)
 tests/statusline_test.sh     - Тесты статус-линии
 tests/notify_phone_test.sh   - Тесты хука уведомлений (curl замокан, фейковый процесс claude через симлинк)
+tests/journal_hooks_test.sh  - Тесты харнеса журнала (временный git-репозиторий)
+.claude/hooks/               - Харнес журнала этого репозитория: session-start, guard-commit, guard-stop
+knowledge/journal/           - Журналы сессий YYYY-MM-DD-NN.md
 install.sh                   - Скрипт установки
 ```
+
+## Журнал сессий
+
+- `SessionStart` заводит журнал за сегодня и подаёт в контекст его путь и три предыдущих — прочитать их «Точку входа» перед работой.
+- Каждый значимый шаг, решение или отвергнутый вариант — строка в «Ход» сразу, а не в конце.
+- Коммит блокируется, пока журнал не заполнен (маркер `НЕ ЗАПОЛНЕН`) или не менялся с прошлого коммита. Журнал и `git commit` — разными командами.
+- Завершение хода с незакоммиченной работой и пустым журналом блокируется (один раз за сессию).
 
 ## Правила работы
 
@@ -45,19 +55,11 @@ Claude Code использует `~/.claude/statusline.sh`, а не файл и�
 ## Архитектура статус-линии
 
 - Получает JSON от Claude Code через stdin (model, context_window, cost и т.д.)
-- Лимиты 5h/weekly берёт из `rate_limits` в stdin (`usage_native.sh`) — не зависит от браузера
-- Model-scoped лимиты (Sonnet, Fable) есть только в API claude.ai: `GET /api/organizations/{orgId}/usage`
-  через **Chrome AppleScript** — XHR в контексте открытой вкладки (`usage_chrome.sh`)
-- В Chrome не ходит вовсе, если `STATUSLINE_SHOW_SONNET` и `STATUSLINE_SHOW_FABLE` выключены
-- Chrome-лимиты кэшируются в `/tmp/claude-statusline-usage-cache` (обновление раз в 5 мин, stale через 10 мин,
-  затем ещё 30 мин показываются последние значения)
-- Второй инстанс Chrome (headless-рендер из того же `Google Chrome.app`) перехватывает Apple Events:
-  скрипт это распознаёт (0 окон + >1 процесса) и не трогает вкладки
+- Лимиты 5h/weekly берёт **только** из `rate_limits` в stdin (`usage_native.sh`) — то, что присылает Anthropic.
+  Браузер, API claude.ai, сеть и кэши не используются (Chrome-путь удалён в v7.0.0)
+- Model-scoped лимитов (Sonnet, Fable) в stdin нет — они не показываются
+- Нет `rate_limits` в stdin → `5h: ?` / `Week: ?`
 - Цвета: зелёный (<60%), жёлтый (60-90%), красный (90%+)
-- При ошибках показывает причину: `⚠ open Chrome`, `⚠ open claude.ai`, `⚠ enable Chrome JS`
-- Если вкладка claude.ai не найдена — автоматически открывает
-- File lock `/tmp/claude-statusline-usage-lock` защищает от параллельных fetch при нескольких сессиях
-- Требует: Chrome → View → Developer → Allow JavaScript from Apple Events
 
 ## Важно: bash 3.2 на macOS
 

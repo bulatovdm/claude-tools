@@ -17,8 +17,6 @@ Opus 4.6 ✻xhigh │ Context: ████░░░░░░░░░░░ 30%
 - **Context** — context window usage with progress bar (green → yellow → red)
 - **5h** — 5-hour usage window utilization with countdown to reset
 - **Week** — 7-day usage window utilization with countdown to reset
-- **Sonnet** — weekly Sonnet-specific usage limit (hidden by default; see [Configuration](#configuration))
-- **Fable** — weekly Fable-specific usage limit (hidden by default; see [Configuration](#configuration))
 - **Cost** — session cost in USD
 - **Time** — session duration
 
@@ -45,11 +43,7 @@ The statusline simply trusts stdin, which reports what Claude Code will actually
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STATUSLINE_SHOW_SONNET` | `0` | Show the weekly Sonnet-specific limit. Set to `1` to display it. Currently the API reports no Sonnet-scoped limit, so this shows `Sonnet: ?`. |
-| `STATUSLINE_SHOW_FABLE` | `0` | Show the weekly Fable-specific limit. Set to `1` to display it. Fable replaced Sonnet as the model-scoped weekly limit reported by the API. |
 | `STATUSLINE_TRUSTED_FILE` | `~/.claude/statusline-trusted` | List of directories whose projects may add a project segment (see below). |
-
-Model-scoped weekly limits are read from the `limits[]` array in the claude.ai usage response, matched by `scope.model.display_name`. The legacy top-level `seven_day_<model>` keys are still used as a fallback when present.
 
 ### Project Segment
 
@@ -74,56 +68,22 @@ When running multiple Claude Code sessions simultaneously, each session independ
 
 ### How It Works
 
-Usage limits come from two sources, each used for what only it can provide:
+Usage limits come only from what Anthropic sends: the `rate_limits` object in the
+statusline stdin JSON (Claude Code v2.1.80+), parsed by `usage_native.sh`.
 
-| Row | Source | Module |
-|-----|--------|--------|
-| `5h`, `Week` | `rate_limits` in the statusline stdin JSON (Claude Code v2.1.80+) | `usage_native.sh` |
-| `Sonnet`, `Fable` | `GET /api/organizations/{orgId}/usage`, via an XHR run inside an open claude.ai tab by Chrome AppleScript | `usage_chrome.sh` |
+| Row | stdin field |
+|-----|-------------|
+| `5h` | `rate_limits.five_hour.used_percentage`, `.resets_at` |
+| `Week` | `rate_limits.seven_day.used_percentage`, `.resets_at` |
 
-The account-wide windows arrive on stdin, so nothing happening in the browser can
-disturb them. The claude.ai API is still the only place model-scoped limits exist,
-so Chrome is consulted for those rows alone — and skipped entirely when neither
-`STATUSLINE_SHOW_SONNET` nor `STATUSLINE_SHOW_FABLE` is enabled. Chrome data is
-cached for 5 minutes; a Chrome failure never blanks the stdin-backed rows.
+Nothing else is queried — no browser, no claude.ai API, no network, no cache. When a
+render arrives without `rate_limits` (an older Claude Code, or before the first API
+response of a session), the rows show `5h: ?` / `Week: ?`.
 
-If no claude.ai tab is found, one is automatically opened — unless a second Chrome instance is running, since the tab could land in that instance instead. Every claude.ai tab is tried in turn — "Allow JavaScript from Apple Events" is a per-profile Chrome setting, so a claude.ai tab in a profile where it is off no longer blocks a working tab in another profile.
-
-Error states are shown in the status bar:
-
-| Status | Meaning |
-|--------|---------|
-| `⚠ open Chrome` | Chrome is not running |
-| `⚠ open claude.ai` | No claude.ai tab found (auto-opens one when Chrome is the only instance) |
-| `⚠ enable Chrome JS` | "Allow JavaScript from Apple Events" is disabled in every profile with a claude.ai tab |
-| `⚠ Chrome busy` | A second Chrome instance is running and Apple Events may be reaching it instead of the real browser |
-| `⚠ API error` | claude.ai API returned an error |
-
-These states only concern the Chrome-backed rows. When stdin still carries limits,
-`5h` and `Week` stay live while `Sonnet`/`Fable` show `?` and the warning at the end
-of the line says why. A failed refresh does not blank the Chrome
-rows right away: the last known values keep showing for 30 minutes
-(`USAGE_CACHE_GRACE_AGE`) before the error replaces them.
-
-#### `⚠ Chrome busy` — a second Chrome instance
-
-AppleScript addresses Chrome by bundle id, so any second instance of the same app
-answers the events instead of the real browser. The common source is a headless run:
-
-```bash
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --headless=new --screenshot=out.png --user-data-dir=/tmp/whatever file://...
-```
-
-While that runs, the status line reaches an instance with no windows and no
-claude.ai session. A visible test browser started on its own profile
-(`--user-data-dir=...`) does the same, only with a window of its own. With more than
-one instance running, a missing claude.ai tab or blocked JS is reported as
-`Chrome busy` and no tab is opened, so claude.ai never ends up in a logged-out test
-profile. Closing that browser's window is not enough — quit it (Cmd+Q), since a
-windowless instance keeps answering. To avoid it entirely, use a binary that has its
-own bundle id — `chrome-headless-shell` or Chrome for Testing — rather than the
-installed Google Chrome.
+Model-scoped weekly limits (Sonnet, Fable) are not part of `rate_limits`, so they are
+no longer shown. Until v7.0.0 they were read from the claude.ai API through Chrome
+AppleScript; that path was removed together with its `STATUSLINE_SHOW_SONNET` /
+`STATUSLINE_SHOW_FABLE` switches and every Chrome requirement.
 
 ### Session Picker
 
@@ -239,12 +199,23 @@ NTFY_TOPIC=claude-…                # ntfy: install the ntfy app, subscribe to 
 
 Both channels can be on at once. Without the file the hook does nothing. The ntfy topic is public to anyone who knows its name, so keep it random. Sessions started before the hook was installed pick it up after `/hooks` or a restart.
 
+### Session Journal (this repository)
+
+Work on this repository is logged in `knowledge/journal/YYYY-MM-DD-NN.md`, one file per day, so every session starts knowing what the previous ones did. The harness lives in `.claude/hooks/` and is registered in the project's `.claude/settings.json` — it applies only to sessions opened in this repository and is not installed globally.
+
+| Hook | Event | What it does |
+|------|-------|--------------|
+| `session-start.sh` | `SessionStart` | Creates today's journal from a template (marked `<!-- НЕ ЗАПОЛНЕН -->`), puts its path, the last three journals and the protocol into the session context |
+| `guard-commit.sh` | `PreToolUse` (Bash) | Blocks `git commit` while today's journal is unfilled or unchanged since the last commit. Heredoc bodies are ignored, so a file whose text mentions `git commit` is not a commit |
+| `guard-stop.sh` | `Stop` | Once per session, refuses to end a turn when there is uncommitted work outside the journal and the journal is still unfilled |
+
+A journal has four parts: goal, starting state, progress (one line per meaningful step, decision or rejected option, written as it happens) and outcome with an entry point for the next session. Remove the marker line on the first entry. Write the journal and run `git commit` as separate commands — the guard checks the journal before the command runs.
+
 ## Requirements
 
 - [Claude Code](https://claude.ai/claude-code) CLI
 - `jq` — JSON processor
-- macOS with Google Chrome
-- **Chrome setting**: View → Developer → Allow JavaScript from Apple Events (per Chrome profile)
+- macOS
 
 ```bash
 brew install jq
@@ -261,20 +232,19 @@ cd claude-tools
 ```
 
 The installer will:
-1. Install the status line script (with usage modules) to `~/.claude/`
+1. Install the status line script (with its usage module) to `~/.claude/`; a leftover `usage_chrome.sh` from older versions is removed
 2. Install the session picker to `~/.claude/session.sh` and add shell aliases: `cs` (picker) and `cn` (new session with pinned effort)
 3. Install the `save-model.sh` SessionStart hook and the `notify-phone.sh` phone-notification hook (Notification, Stop, UserPromptSubmit), register them in `settings.json` and create `~/.claude/notify.env` with a random ntfy topic
 4. Install git hooks to `~/.git-hooks/` and set global `core.hooksPath`
 5. Install the Mercurial extension to `~/.hgext/` and enable it in `~/.hgrc` (if `hg` is installed)
 6. Configure the status line in `settings.json`
-7. Open Chrome with claude.ai if needed and check that "Allow JavaScript from Apple Events" is enabled
 
 The default effort level for the `cn` alias is `medium`; set `CLAUDE_NEW_SESSION_EFFORT` when running the installer to pick another (e.g. `CLAUDE_NEW_SESSION_EFFORT=xhigh ./install.sh`).
 
 ### Manual Install
 
 ```bash
-cp scripts/statusline.sh ~/.claude/statusline.sh
+cp scripts/statusline.sh scripts/usage_native.sh ~/.claude/
 chmod +x ~/.claude/statusline.sh
 ```
 
@@ -288,8 +258,6 @@ Add to `~/.claude/settings.json`:
   }
 }
 ```
-
-Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Events** — the setting is per profile, so enable it in the profile whose claude.ai tab stays open.
 
 ## Usage
 
@@ -309,6 +277,7 @@ Then enable in Chrome: **View → Developer → Allow JavaScript from Apple Even
 bash tests/statusline_test.sh    # Run tests
 bash tests/hg_extension_test.sh  # Mercurial extension (isolated HGRCPATH)
 bash tests/notify_phone_test.sh  # Phone notifications hook (mocked curl)
+bash tests/journal_hooks_test.sh # Session journal hooks (temporary git repo)
 ~/.claude/statusline.sh --test   # Visual preview
 ~/.claude/statusline.sh --help   # Show help
 ~/.claude/session.sh --help      # Session picker help

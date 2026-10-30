@@ -4,7 +4,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STATUSLINE="$SCRIPT_DIR/scripts/statusline.sh"
-CHROME_MODULE="$SCRIPT_DIR/scripts/usage_chrome.sh"
 NATIVE_MODULE="$SCRIPT_DIR/scripts/usage_native.sh"
 
 PASS=0
@@ -16,11 +15,9 @@ strip_colors() {
 
 export STATUSLINE_CACHE_DIR=$(mktemp -d)
 TEST_SCRIPT=$(mktemp)
-TEST_CHROME=$(mktemp)
 TEST_NATIVE=$(mktemp)
 
 sed 's/^readonly //' "$STATUSLINE" | sed '/^case/,/^esac/d' > "$TEST_SCRIPT"
-cp "$CHROME_MODULE" "$TEST_CHROME"
 cp "$NATIVE_MODULE" "$TEST_NATIVE"
 
 assert_contains() {
@@ -75,16 +72,6 @@ run_func() {
     bash -c "source '$TEST_SCRIPT'; $*"
 }
 
-run_chrome_func() {
-    bash -c "source '$TEST_CHROME'; $*"
-}
-
-run_chrome_func_with_cache() {
-    local cache_file=$1
-    shift
-    bash -c "source '$TEST_CHROME'; USAGE_CACHE_FILE='$cache_file'; USAGE_ERROR_FILE='${cache_file}.error'; $*"
-}
-
 run_native_func() {
     bash -c "source '$TEST_NATIVE'; $*"
 }
@@ -104,7 +91,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "6.3.0"
+assert_contains "shows version" "$result" "7.0.0"
 
 echo ""
 echo "[Help]"
@@ -114,7 +101,7 @@ assert_contains "help mentions model" "$result" "model"
 assert_contains "help mentions usage limits" "$result" "limits"
 assert_contains "help mentions cost" "$result" "cost"
 assert_contains "help mentions duration" "$result" "duration"
-assert_contains "help mentions Chrome" "$result" "Chrome"
+assert_not_contains "help no longer mentions Chrome" "$result" "Chrome"
 assert_contains "help mentions native rate_limits" "$result" "native"
 assert_contains "help mentions effort" "$result" "effort"
 
@@ -431,71 +418,31 @@ assert_equals "negative clamped to empty" "$bar" "░░░░░░░░░░
 echo ""
 echo "[format_output]"
 
-output=$(STATUSLINE_SHOW_SONNET=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
+output=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000" | strip_colors)
 assert_contains "contains model name" "$output" "Opus"
 assert_contains "contains context percentage" "$output" "45%"
 assert_contains "contains 5h limit" "$output" "5h: 10%"
 assert_contains "contains week limit" "$output" "Week: 30%"
-assert_contains "contains sonnet limit" "$output" "Sonnet: 5%"
-
-output_default=$(STATUSLINE_SHOW_FABLE= STATUSLINE_SHOW_SONNET= run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
-if echo "$output_default" | grep -qF "Sonnet:"; then
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: sonnet hidden by default"
-else
-    PASS=$((PASS + 1))
-    echo "  PASS: sonnet hidden by default"
-fi
 assert_contains "contains timer icon" "$output" "◑"
 assert_contains "contains reset time" "$output" "h"
 assert_contains "contains cost" "$output" '$1.25'
 assert_contains "contains time" "$output" "Time: 10m"
 assert_contains "contains separators" "$output" "│"
+assert_not_contains "no model-scoped rows" "$output" "Sonnet:"
+assert_not_contains "no fable row" "$output" "Fable:"
+assert_not_contains "no warning" "$output" "⚠"
 
-output_fable=$(STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
-assert_contains "contains fable limit" "$output_fable" "Fable: 7%"
-
-output_default=$(STATUSLINE_SHOW_FABLE= STATUSLINE_SHOW_SONNET= run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
-if echo "$output_default" | grep -qF "Fable:"; then
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: fable hidden by default"
-else
-    PASS=$((PASS + 1))
-    echo "  PASS: fable hidden by default"
-fi
-
-output_both=$(STATUSLINE_SHOW_SONNET=1 STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' 7 '$RESET_6D'" | strip_colors)
-assert_contains "both flags show sonnet" "$output_both" "Sonnet: 5%"
-assert_contains "both flags show fable" "$output_both" "Fable: 7%"
-
-output_fable_missing=$(STATUSLINE_SHOW_FABLE=1 run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
-assert_contains "fable without data shows ?" "$output_fable_missing" "Fable: ?"
-
-output_effort=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' '' '' xhigh 1" | strip_colors)
+output_effort=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000 xhigh 1" | strip_colors)
 assert_contains "effort follows model name" "$output_effort" "Opus ✻xhigh │"
 
-output_no_thinking=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 '' '' '' medium ''" | strip_colors)
+output_no_thinking=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000 medium ''" | strip_colors)
 assert_contains "effort without thinking icon" "$output_no_thinking" "Opus medium │"
 
-output_no_effort=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000" | strip_colors)
+output_no_effort=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000" | strip_colors)
 assert_contains "no effort keeps model followed by separator" "$output_no_effort" "Opus │"
 
-echo ""
-echo "[format_output error state]"
-
-output=$(run_func "format_output 45 Opus '' '' '' '' '' '' 1.25 600000 'open claude.ai'" | strip_colors)
-assert_contains "error shows warning icon" "$output" "⚠"
-assert_contains "error shows message" "$output" "open claude.ai"
-assert_contains "error shows question marks" "$output" "5h: ?"
-
-output_no_error=$(run_func "format_output 45 Opus 10 30 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 1.25 600000 ''" | strip_colors)
-if echo "$output_no_error" | grep -qF "⚠"; then
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: no error hides warning"
-else
-    PASS=$((PASS + 1))
-    echo "  PASS: no error hides warning"
-fi
+output_no_limits=$(run_func "format_output 45 Opus '' '' '' '' 1.25 600000" | strip_colors)
+assert_contains "missing limits show question marks" "$output_no_limits" "5h: ?"
 
 echo ""
 echo "[format_usage_part]"
@@ -515,306 +462,6 @@ assert_contains "4h shows three-quarter icon" "$result" "◕"
 
 result=$(run_func "format_usage_part '5h' '20' '' 18000" | strip_colors)
 assert_contains "no reset without timestamp" "$result" "5h: 20%"
-
-echo ""
-echo "=== Chrome module (legacy) ==="
-echo ""
-
-echo "[usage_cache_is_stale]"
-
-STALE_CACHE="/tmp/claude-statusline-test-stale-$$"
-rm -f "$STALE_CACHE"
-
-result=$(run_chrome_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
-assert_equals "missing cache is stale" "$result" "stale"
-
-echo '{"five_hour":{"utilization":5.0},"seven_day":{"utilization":20.0}}' > "$STALE_CACHE"
-result=$(run_chrome_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
-assert_equals "recent cache is fresh" "$result" "fresh"
-
-touch -t 202001010000 "$STALE_CACHE"
-result=$(run_chrome_func_with_cache "$STALE_CACHE" "USAGE_CACHE_MAX_AGE=60; if usage_cache_is_stale; then echo stale; else echo fresh; fi")
-assert_equals "old cache is stale" "$result" "stale"
-
-rm -f "$STALE_CACHE"
-
-echo ""
-echo "[fetch lock]"
-
-LOCK_CACHE="/tmp/claude-statusline-test-lock-cache-$$"
-LOCK_FILE="/tmp/claude-statusline-test-lock-$$.lock"
-CALL_COUNT_FILE="/tmp/claude-statusline-test-calls-$$"
-rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE"
-echo 0 > "$CALL_COUNT_FILE"
-
-# fetch_usage_limits_if_still_stale should not fetch if cache was populated while waiting for lock
-result=$(bash -c "
-    source '$TEST_CHROME'
-    USAGE_CACHE_FILE='$LOCK_CACHE'
-    USAGE_ERROR_FILE='${LOCK_CACHE}.error'
-    USAGE_CACHE_LOCK_FILE='$LOCK_FILE'
-    USAGE_CACHE_MAX_AGE=9999
-    fetch_usage_limits() {
-        local c=\$(cat '$CALL_COUNT_FILE')
-        echo \$(( c + 1 )) > '$CALL_COUNT_FILE'
-    }
-    echo '{\"five_hour\":{\"utilization\":10.0}}' > '$LOCK_CACHE'
-    fetch_usage_limits_if_still_stale
-    cat '$CALL_COUNT_FILE'
-")
-assert_equals "skips fetch when cache is fresh" "$result" "0"
-
-rm -f "$LOCK_CACHE" "$LOCK_FILE" "$CALL_COUNT_FILE" "${LOCK_CACHE}.error"
-
-echo ""
-echo "[get_usage_limits_chrome from cache]"
-
-READ_CACHE="/tmp/claude-statusline-test-read-$$"
-echo "{\"five_hour\":{\"utilization\":25.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":50.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":10.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$READ_CACHE"
-
-result=$(run_chrome_func_with_cache "$READ_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome")
-assert_contains "reads utilization from cache" "$result" "25|50|10|"
-assert_contains "reads reset times from cache" "$result" "$RESET_2H"
-
-rm -f "$READ_CACHE"
-
-echo ""
-echo "[scoped model limits from limits[]]"
-
-SCOPED_CACHE="/tmp/claude-statusline-test-scoped-$$"
-cat > "$SCOPED_CACHE" << EOF
-{
-  "five_hour": {"utilization": 5.0, "resets_at": "${RESET_2H}.000000+00:00"},
-  "seven_day": {"utilization": 29.0, "resets_at": "${RESET_6D}.000000+00:00"},
-  "seven_day_sonnet": null,
-  "limits": [
-    {"kind": "session", "percent": 5, "resets_at": "${RESET_2H}.000000+00:00", "scope": null},
-    {"kind": "weekly_all", "percent": 29, "resets_at": "${RESET_6D}.000000+00:00", "scope": null},
-    {"kind": "weekly_scoped", "percent": 7, "resets_at": "${RESET_6D}.000000+00:00",
-     "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
-  ]
-}
-EOF
-
-result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "scoped_model_field 'Fable' 'percent'")
-assert_equals "extracts fable percent from limits[]" "$result" "7"
-
-result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "scoped_model_field 'Fable' 'resets_at'")
-assert_contains "extracts fable resets_at from limits[]" "$result" "$RESET_6D"
-
-result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "scoped_model_field 'Sonnet' 'percent'")
-assert_equals "absent model yields empty" "$result" ""
-
-result=$(run_chrome_func_with_cache "$SCOPED_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome")
-assert_contains "fable appended to usage line" "$result" "|7|"
-
-rm -f "$SCOPED_CACHE"
-
-LEGACY_CACHE="/tmp/claude-statusline-test-legacy-$$"
-echo "{\"five_hour\":{\"utilization\":5.0},\"seven_day\":{\"utilization\":29.0},\"seven_day_sonnet\":{\"utilization\":12.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$LEGACY_CACHE"
-
-result=$(run_chrome_func_with_cache "$LEGACY_CACHE" "scoped_model_field 'Sonnet' 'percent'")
-assert_equals "falls back to legacy seven_day_sonnet key" "$result" "12.0"
-
-result=$(run_chrome_func_with_cache "$LEGACY_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome")
-assert_contains "legacy sonnet truncated to integer in usage line" "$result" "5|29|12|"
-
-result=$(run_chrome_func_with_cache "$LEGACY_CACHE" "scoped_model_field 'Fable' 'percent'")
-assert_equals "legacy cache without fable yields empty" "$result" ""
-
-rm -f "$LEGACY_CACHE"
-
-EMPTY_CACHE="/tmp/claude-statusline-test-empty-$$"
-rm -f "$EMPTY_CACHE"
-result=$(bash -c "
-    source '$TEST_CHROME'
-    USAGE_CACHE_FILE='$EMPTY_CACHE'
-    USAGE_ERROR_FILE='${EMPTY_CACHE}.error'
-    fetch_usage_limits() { return 1; }
-    get_usage_limits_chrome
-")
-assert_contains "no cache returns error prefix" "$result" "error:"
-
-ERROR_CACHE="/tmp/claude-statusline-test-error-$$"
-rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
-echo "open Chrome" > "${ERROR_CACHE}.error"
-result=$(run_chrome_func_with_cache "$ERROR_CACHE" "USAGE_CACHE_MAX_AGE=9999; fetch_usage_limits() { return 1; }; get_usage_limits_chrome")
-assert_contains "error file content passed through" "$result" "error:open Chrome"
-
-rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
-
-echo ""
-echo "[fetch_usage_via_chrome tab classification]"
-
-run_fetch_via_chrome() {
-    local tab_result=$1
-    local error_file=$2
-    bash -c "
-        source '$TEST_CHROME'
-        USAGE_CACHE_FILE='${error_file%.error}'
-        USAGE_ERROR_FILE='$error_file'
-        USAGE_LOG_FILE='/dev/null'
-        chrome_is_running() { return 0; }
-        chrome_instance_count() { echo '1'; }
-        addressed_chrome_window_count() { echo '1'; }
-        open_claude_tab() { echo 'OPENED_TAB'; }
-        find_claude_tab_and_execute_js() { cat <<'TAB_RESULT'
-$tab_result
-TAB_RESULT
-        }
-        fetch_usage_via_chrome || echo 'FETCH_FAILED'
-    "
-}
-
-FETCH_ERROR="/tmp/claude-statusline-test-fetch-$$.error"
-rm -f "$FETCH_ERROR"
-
-result=$(run_fetch_via_chrome '{"five_hour":{"utilization":42}}' "$FETCH_ERROR")
-assert_contains "usable tab result passes through" "$result" '"utilization":42'
-
-JS_OFF="execution error: Google Chrome got an error: Executing JavaScript through AppleScript is turned off."
-result=$(run_fetch_via_chrome "$JS_OFF" "$FETCH_ERROR")
-assert_contains "every claude.ai tab refusing JS reports the setting" "$(cat "$FETCH_ERROR")" "enable Chrome JS"
-assert_contains "refused JS fails the fetch" "$result" "FETCH_FAILED"
-
-result=$(run_fetch_via_chrome "" "$FETCH_ERROR")
-assert_contains "no claude.ai tab asks to open one" "$(cat "$FETCH_ERROR")" "open claude.ai"
-assert_contains "no claude.ai tab opens it" "$result" "OPENED_TAB"
-
-result=$(run_fetch_via_chrome "orgs: 403" "$FETCH_ERROR")
-assert_contains "non-JSON tab result reports API error" "$(cat "$FETCH_ERROR")" "API error"
-
-rm -f "$FETCH_ERROR"
-
-echo ""
-echo "[fetch_usage_via_chrome instance detection]"
-
-run_fetch_with_windows() {
-    local window_count=$1
-    local instance_count=$2
-    local error_file=$3
-    local tab_result=${4:-}
-    bash -c "
-        source '$TEST_CHROME'
-        USAGE_CACHE_FILE='${error_file%.error}'
-        USAGE_ERROR_FILE='$error_file'
-        USAGE_LOG_FILE='/dev/null'
-        chrome_is_running() { return 0; }
-        chrome_instance_count() { echo '$instance_count'; }
-        addressed_chrome_window_count() { echo '$window_count'; }
-        open_claude_tab() { echo 'OPENED_TAB'; }
-        find_claude_tab_and_execute_js() { echo '$tab_result'; }
-        fetch_usage_via_chrome || echo 'FETCH_FAILED'
-    "
-}
-
-WINDOW_ERROR="/tmp/claude-statusline-test-window-$$.error"
-rm -f "$WINDOW_ERROR"
-
-result=$(run_fetch_with_windows 0 2 "$WINDOW_ERROR")
-assert_contains "windowless second instance reports Chrome busy" "$(cat "$WINDOW_ERROR")" "Chrome busy"
-assert_not_contains "hijacked event opens no tab" "$result" "OPENED_TAB"
-
-result=$(run_fetch_with_windows 0 1 "$WINDOW_ERROR")
-assert_contains "sole instance without windows asks to open Chrome" "$(cat "$WINDOW_ERROR")" "open Chrome"
-assert_not_contains "windowless Chrome opens no tab" "$result" "OPENED_TAB"
-
-result=$(run_fetch_with_windows 3 1 "$WINDOW_ERROR")
-assert_contains "windows present still looks for a tab" "$result" "OPENED_TAB"
-
-result=$(run_fetch_with_windows 1 2 "$WINDOW_ERROR")
-assert_contains "second instance with a window and no tab reports Chrome busy" "$(cat "$WINDOW_ERROR")" "Chrome busy"
-assert_not_contains "second instance with a window gets no claude.ai tab" "$result" "OPENED_TAB"
-
-result=$(run_fetch_with_windows 1 2 "$WINDOW_ERROR" "$JS_OFF")
-assert_contains "blocked JS beside a second instance reports Chrome busy" "$(cat "$WINDOW_ERROR")" "Chrome busy"
-
-result=$(run_fetch_with_windows 1 2 "$WINDOW_ERROR" '{"five_hour":{"utilization":42}}')
-assert_contains "second instance answering with data still succeeds" "$result" '"utilization":42'
-
-rm -f "$WINDOW_ERROR"
-
-echo ""
-echo "[get_usage_limits_chrome grace window]"
-
-GRACE_CACHE="/tmp/claude-statusline-test-grace-$$"
-cp "$READ_CACHE" "$GRACE_CACHE" 2>/dev/null || echo '{"five_hour":{"utilization":42,"resets_at":"'"$RESET_2H"'"},"seven_day":{"utilization":13,"resets_at":"'"$RESET_2H"'"}}' > "$GRACE_CACHE"
-rm -f "${GRACE_CACHE}.error"
-echo "Chrome busy" > "${GRACE_CACHE}.error"
-
-touch -t 202001010000 "$GRACE_CACHE"
-
-result=$(run_chrome_func_with_cache "$GRACE_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=600; USAGE_CACHE_GRACE_AGE=99999999999; fetch_usage_limits() { return 1; }; get_usage_limits_chrome")
-assert_not_contains "cache past stale but within grace still shows limits" "$result" "error:"
-
-result=$(run_chrome_func_with_cache "$GRACE_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=600; USAGE_CACHE_GRACE_AGE=1800; fetch_usage_limits() { return 1; }; get_usage_limits_chrome")
-assert_contains "cache past grace falls back to the error" "$result" "error:Chrome busy"
-
-rm -f "$GRACE_CACHE" "${GRACE_CACHE}.error"
-
-echo ""
-echo "[merge_usage_sources]"
-
-NATIVE_LINE="24|74||2026-09-17T18:10:00|2026-09-17T19:00:00|||"
-CHROME_LINE="37|70|12|2026-09-17T17:00:00|2026-09-17T23:00:00|2026-09-18T01:00:00|89|2026-09-17T23:00:00"
-
-result=$(run_func "merge_usage_sources '$NATIVE_LINE' '$CHROME_LINE'")
-assert_equals "native owns 5h and weekly, chrome owns model rows" "$result" "24|74|12|2026-09-17T18:10:00|2026-09-17T19:00:00|2026-09-18T01:00:00|89|2026-09-17T23:00:00"
-
-result=$(run_func "merge_usage_sources '||||||||' '$CHROME_LINE'")
-assert_equals "chrome fills in when stdin carries no limits" "$result" "37|70|12|2026-09-17T17:00:00|2026-09-17T23:00:00|2026-09-18T01:00:00|89|2026-09-17T23:00:00"
-
-result=$(run_func "merge_usage_sources '$NATIVE_LINE' 'error:Chrome busy|||||||'")
-assert_equals "an unreachable chrome keeps native limits and names the reason" "$result" "24|74||2026-09-17T18:10:00|2026-09-17T19:00:00||||Chrome busy"
-assert_not_contains "chrome error does not blank stdin limits" "$result" "error:"
-
-result=$(run_func "merge_usage_sources '||||||||' 'error:Chrome busy|||||||'")
-assert_contains "chrome error surfaces when it was the only source" "$result" "error:Chrome busy"
-
-echo ""
-echo "[get_usage_limits source selection]"
-
-# get_usage_limits sources its modules from SCRIPT_DIR, so the stand-ins have to
-# live on disk — a shell-level mock would be overwritten by that source
-FAKE_MODULE_DIR=$(mktemp -d)
-cp "$NATIVE_MODULE" "$FAKE_MODULE_DIR/usage_native.sh"
-cat > "$FAKE_MODULE_DIR/usage_chrome.sh" <<'FAKE_CHROME'
-get_usage_limits_chrome() { echo "37|70|12|chrome-5h|chrome-week|chrome-sonnet|89|chrome-fable"; }
-FAKE_CHROME
-
-STDIN_WITH_LIMITS='{"rate_limits":{"five_hour":{"used_percentage":24,"resets_at":1789683000},"seven_day":{"used_percentage":74,"resets_at":1789686000}}}'
-
-result=$(bash -c "
-    source '$TEST_SCRIPT'
-    SCRIPT_DIR='$FAKE_MODULE_DIR'
-    SHOW_SONNET=0
-    SHOW_FABLE=0
-    get_usage_limits '$STDIN_WITH_LIMITS'
-")
-assert_not_contains "model rows hidden means chrome is skipped" "$result" "chrome-"
-assert_contains "stdin limits still render" "$result" "24|74|"
-
-result=$(bash -c "
-    source '$TEST_SCRIPT'
-    SCRIPT_DIR='$FAKE_MODULE_DIR'
-    SHOW_SONNET=0
-    SHOW_FABLE=1
-    get_usage_limits '$STDIN_WITH_LIMITS'
-")
-assert_contains "fable shown means chrome supplies its row" "$result" "|89|chrome-fable"
-assert_contains "fable shown still keeps native 5h" "$result" "24|74|"
-assert_not_contains "chrome never overrides the native 5h reset" "$result" "chrome-5h"
-
-result=$(bash -c "
-    source '$TEST_SCRIPT'
-    SCRIPT_DIR='$FAKE_MODULE_DIR'
-    SHOW_SONNET=0
-    SHOW_FABLE=0
-    get_usage_limits '{}'
-")
-assert_contains "stdin without limits falls back to chrome" "$result" "37|70|"
-
-rm -rf "$FAKE_MODULE_DIR"
 
 echo ""
 echo "=== Native module ==="
@@ -841,7 +488,6 @@ native_input="{\"rate_limits\":{\"five_hour\":{\"used_percentage\":25,\"resets_a
 result=$(run_native_func "get_usage_limits_native '$native_input'")
 assert_contains "native parses five_hour" "$result" "25|"
 assert_contains "native parses seven_day" "$result" "|50|"
-assert_contains "native has empty sonnet" "$result" "|50||"
 assert_contains "native converts five_hour reset" "$result" "$RESET_2H"
 assert_contains "native converts seven_day reset" "$result" "$RESET_6D"
 
@@ -853,44 +499,25 @@ assert_contains "native truncates seven_day decimal" "$result" "|66|"
 
 # Missing rate_limits
 result=$(run_native_func "get_usage_limits_native '{\"model\":{\"display_name\":\"Opus\"}}'")
-assert_equals "native handles missing rate_limits" "$result" "|||||||"
+assert_equals "native handles missing rate_limits" "$result" "|||"
 
 # Partial data (only five_hour)
 partial_input="{\"rate_limits\":{\"five_hour\":{\"used_percentage\":40,\"resets_at\":${RESET_2H_UNIX}}}}"
 result=$(run_native_func "get_usage_limits_native '$partial_input'")
 assert_contains "native handles partial data" "$result" "40|"
 
-# Both fetchers must emit the same field count that statusline.sh parses
 native_fields=$(run_native_func "get_usage_limits_native '$native_input'" | awk -F'|' '{print NF}')
-assert_equals "native emits 8 fields" "$native_fields" "8"
+assert_equals "native emits 4 fields" "$native_fields" "4"
 
-FIELD_CACHE="/tmp/claude-statusline-test-fields-$$"
-echo '{"five_hour":{"utilization":5.0},"seven_day":{"utilization":29.0}}' > "$FIELD_CACHE"
-chrome_fields=$(run_chrome_func_with_cache "$FIELD_CACHE" "USAGE_CACHE_MAX_AGE=9999; USAGE_CACHE_STALE_AGE=9999; get_usage_limits_chrome" | awk -F'|' '{print NF}')
-assert_equals "chrome emits 8 fields" "$chrome_fields" "8"
-rm -f "$FIELD_CACHE"
 
 echo ""
 echo "=== Integration ==="
 echo ""
 
-echo "[Integration — Chrome]"
+echo "[Integration — stdin rate_limits]"
 
-INT_CACHE="/tmp/claude-statusline-test-int-$$"
-echo "{\"five_hour\":{\"utilization\":12.0,\"resets_at\":\"${RESET_2H}.000000+00:00\"},\"seven_day\":{\"utilization\":45.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"},\"seven_day_sonnet\":{\"utilization\":8.0,\"resets_at\":\"${RESET_6D}.000000+00:00\"}}" > "$INT_CACHE"
-
-full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"effort":{"level":"high"},"thinking":{"enabled":true},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
-    bash -c "
-        STATUSLINE_SHOW_SONNET=1
-        source '$TEST_SCRIPT'
-        source '$TEST_CHROME'
-        USAGE_CACHE_FILE='$INT_CACHE'
-        USAGE_ERROR_FILE='${INT_CACHE}.error'
-        USAGE_CACHE_MAX_AGE=9999
-        USAGE_CACHE_STALE_AGE=9999
-        get_usage_limits() { get_usage_limits_chrome; }
-        main
-    " | strip_colors)
+full_output=$(echo "{\"context_window\":{\"used_percentage\":55},\"model\":{\"display_name\":\"Sonnet\"},\"effort\":{\"level\":\"high\"},\"thinking\":{\"enabled\":true},\"cost\":{\"total_cost_usd\":2.50,\"total_duration_ms\":900000},\"rate_limits\":{\"five_hour\":{\"used_percentage\":12,\"resets_at\":${RESET_2H_UNIX}},\"seven_day\":{\"used_percentage\":45,\"resets_at\":${RESET_6D_UNIX}}}}" | \
+    bash -c "source '$TEST_SCRIPT'; SCRIPT_DIR='$SCRIPT_DIR/scripts'; main" | strip_colors)
 
 assert_contains "has model" "$full_output" "Sonnet"
 assert_contains "has effort from stdin" "$full_output" "Sonnet ✻high"
@@ -898,49 +525,17 @@ assert_contains "has context" "$full_output" "55%"
 assert_contains "has 5h" "$full_output" "5h: 12%"
 assert_contains "has timer icon" "$full_output" "◑"
 assert_contains "has week" "$full_output" "Week: 45%"
-assert_contains "has sonnet" "$full_output" "Sonnet: 8%"
 assert_contains "has cost" "$full_output" '$2.50'
 assert_contains "has time" "$full_output" "15m"
 
-rm -f "$INT_CACHE"
-
 echo ""
-echo "[Integration — Chrome error state]"
-
-ERROR_CACHE="/tmp/claude-statusline-test-error-int-$$"
-rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
-echo "open Chrome" > "${ERROR_CACHE}.error"
-
-full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Sonnet"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
-    bash -c "
-        source '$TEST_SCRIPT'
-        source '$TEST_CHROME'
-        USAGE_CACHE_FILE='$ERROR_CACHE'
-        USAGE_ERROR_FILE='${ERROR_CACHE}.error'
-        USAGE_CACHE_MAX_AGE=9999
-        USAGE_CACHE_STALE_AGE=9999
-        fetch_usage_limits() { return 1; }
-        get_usage_limits() { get_usage_limits_chrome; }
-        main
-    " | strip_colors)
-assert_contains "error shows in full output" "$full_output" "open Chrome"
-assert_contains "error shows question marks" "$full_output" "5h: ?"
-
-rm -f "$ERROR_CACHE" "${ERROR_CACHE}.error"
-
-echo ""
-echo "[Integration — Chrome error beside stdin limits]"
+echo "[Integration — no rate_limits on stdin]"
 
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Opus"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
-    bash -c "
-        STATUSLINE_SHOW_FABLE=1
-        source '$TEST_SCRIPT'
-        get_usage_limits() { merge_usage_sources '24|74||||||' 'error:Chrome busy|||||||'; }
-        main
-    " | strip_colors)
-assert_contains "stdin limits still render beside a chrome error" "$full_output" "5h: 24%"
-assert_contains "blank fable row is explained" "$full_output" "Fable: ?"
-assert_contains "chrome error is shown while stdin has limits" "$full_output" "⚠ Chrome busy"
+    bash -c "source '$TEST_SCRIPT'; SCRIPT_DIR='$SCRIPT_DIR/scripts'; main" | strip_colors)
+assert_contains "missing limits show question marks" "$full_output" "5h: ?"
+assert_contains "missing weekly shows question mark" "$full_output" "Week: ?"
+assert_not_contains "no warning without a browser source" "$full_output" "⚠"
 
 echo ""
 echo "[Project segment]"
@@ -979,10 +574,10 @@ rm -rf "$SEGMENT_ROOT"
 echo ""
 echo "[Color coding]"
 
-low_output=$(run_func "format_output 30 Opus 10 20 5 '$RESET_2H' '$RESET_6D' '$RESET_6D' 0.5 60000")
+low_output=$(run_func "format_output 30 Opus 10 20 '$RESET_2H' '$RESET_6D' 0.5 60000")
 assert_contains "low context uses green" "$low_output" "32m"
 
-high_output=$(run_func "format_output 90 Opus 85 95 70 '$RESET_2H' '$RESET_6D' '$RESET_6D' 5.0 3600000")
+high_output=$(run_func "format_output 90 Opus 85 95 '$RESET_2H' '$RESET_6D' 5.0 3600000")
 assert_contains "high context uses red" "$high_output" "31m"
 
 assert_contains "model uses cyan" "$low_output" "36m"
@@ -997,20 +592,18 @@ assert_contains "92% usage is red" "$high_usage" "31m"
 echo ""
 echo "[Test mode]"
 
-test_output=$(STATUSLINE_SHOW_SONNET=1 bash "$STATUSLINE" --test | strip_colors)
+test_output=$(bash "$STATUSLINE" --test | strip_colors)
 assert_contains "test shows low usage" "$test_output" "45%"
 assert_contains "test shows high usage" "$test_output" "85%"
 assert_contains "test shows no limits" "$test_output" "?"
 assert_contains "test shows model" "$test_output" "Opus"
-assert_contains "test shows sonnet" "$test_output" "Sonnet:"
 assert_contains "test shows cost" "$test_output" '$0.42'
 assert_contains "test shows time" "$test_output" "Time:"
-assert_contains "test shows error state" "$test_output" "open claude.ai"
 assert_contains "test shows effort levels" "$test_output" "Opus ✻low"
 assert_contains "test shows max effort" "$test_output" "Opus ✻max"
 assert_contains "test shows thinking disabled" "$test_output" "Opus medium"
 
-rm -f "$TEST_SCRIPT" "$TEST_CHROME" "$TEST_NATIVE"
+rm -f "$TEST_SCRIPT" "$TEST_NATIVE"
 
 echo ""
 echo "========================"

@@ -17,6 +17,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh\"",
+            "statusMessage": "Открываю журнал сессии",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "work-worker hook --project-root \"$CLAUDE_PROJECT_DIR\" # work-worker-managed-hook",
             "timeout": 10
           }
@@ -30,6 +40,29 @@
             "type": "command",
             "command": "work-worker hook --project-root \"$CLAUDE_PROJECT_DIR\" # work-worker-managed-hook",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-commit.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-stop.sh\"",
+            "timeout": 15
           }
         ]
       }

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="6.3.0"
+readonly VERSION="7.0.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -26,9 +26,6 @@ readonly TRUSTED_ROOTS_FILE="${STATUSLINE_TRUSTED_FILE:-$HOME/.claude/statusline
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-readonly SHOW_SONNET="${STATUSLINE_SHOW_SONNET:-0}"
-readonly SHOW_FABLE="${STATUSLINE_SHOW_FABLE:-0}"
-
 # Durable per-session cache: /tmp is wiped on reboot, which would lose the
 # thinking state needed to restore a session (it exists nowhere else on disk)
 readonly SESSION_CACHE_DIR="${STATUSLINE_CACHE_DIR:-$HOME/.claude/statusline-cache}"
@@ -50,11 +47,8 @@ session.sh (cs) restores the session's own effort/thinking into settings.json
 before launch, so stdin stays truthful. The transcript is only a fallback for
 Claude Code versions that don't send the effort field at all.
 
-5h and weekly limits come from the native rate_limits on stdin (Claude Code v2.1.80+).
-Model-scoped rows (Sonnet, Fable) exist only in the claude.ai API and are read through
-Chrome AppleScript; Chrome is skipped when neither is shown. Chrome reads require a
-claude.ai tab and "Allow JavaScript from Apple Events" enabled in that tab's profile
-(the setting is per profile; every claude.ai tab is tried).
+5h and weekly limits come only from the native rate_limits that Anthropic sends
+on stdin (Claude Code v2.1.80+). Nothing else is queried: no browser, no network.
 
 Project segment: if the project directory (.workspace.project_dir, else .cwd)
 contains an executable $PROJECT_SEGMENT_PATH and lies under a directory
@@ -455,61 +449,11 @@ timer_icon_for_seconds() {
     fi
 }
 
-# Claude Code sends the account-wide windows on stdin, where nothing in the
-# browser can disturb them, so those own 5h and weekly. The claude.ai API is
-# still the only source of model-scoped rows, so Chrome is consulted for those
-# alone — and skipped entirely when neither model-scoped row is shown.
-merge_usage_sources() {
-    local native=$1
-    local chrome=$2
-
-    local chrome_error=""
-    if [[ "${chrome%%|*}" == error:* ]]; then
-        chrome_error="${chrome%%|*}"
-        chrome="|||||||"
-    fi
-
-    local n_five n_week n_sonnet n_five_reset n_week_reset n_sonnet_reset n_fable n_fable_reset
-    local c_five c_week c_sonnet c_five_reset c_week_reset c_sonnet_reset c_fable c_fable_reset
-    IFS='|' read -r n_five n_week n_sonnet n_five_reset n_week_reset n_sonnet_reset n_fable n_fable_reset <<< "$native"
-    IFS='|' read -r c_five c_week c_sonnet c_five_reset c_week_reset c_sonnet_reset c_fable c_fable_reset <<< "$chrome"
-
-    local five="${n_five:-$c_five}"
-    local week="${n_week:-$c_week}"
-    local five_reset="${n_five_reset:-$c_five_reset}"
-    local week_reset="${n_week_reset:-$c_week_reset}"
-
-    if [[ -n "$chrome_error" && -z "${five}${week}" ]]; then
-        echo "${chrome_error}|||||||"
-        return
-    fi
-
-    local merged="${five}|${week}|${c_sonnet}|${five_reset}|${week_reset}|${c_sonnet_reset}|${c_fable}|${c_fable_reset}"
-
-    # Stdin still covers 5h and weekly, but the model rows go blank, so the
-    # reason rides along in a ninth field instead of replacing the limits
-    [[ -n "$chrome_error" ]] && merged="${merged}|${chrome_error#error:}"
-    echo "$merged"
-}
-
-usage_line_is_empty() {
-    [[ -z "$(echo "$1" | tr -d '|')" ]]
-}
-
 get_usage_limits() {
     local input=$1
 
     source "${SCRIPT_DIR}/usage_native.sh"
-    local native
-    native=$(get_usage_limits_native "$input")
-
-    if [[ "$SHOW_SONNET" == "0" && "$SHOW_FABLE" == "0" ]] && ! usage_line_is_empty "$native"; then
-        echo "$native"
-        return
-    fi
-
-    source "${SCRIPT_DIR}/usage_chrome.sh"
-    merge_usage_sources "$native" "$(get_usage_limits_chrome)"
+    get_usage_limits_native "$input"
 }
 
 format_usage_part() {
@@ -545,17 +489,12 @@ format_output() {
     local model=$2
     local five_hour=$3
     local seven_day=$4
-    local sonnet=$5
-    local five_hour_reset=$6
-    local seven_day_reset=$7
-    local sonnet_reset=$8
-    local cost=$9
-    local duration_ms=${10}
-    local error_msg=${11:-}
-    local fable=${12:-}
-    local fable_reset=${13:-}
-    local effort_level=${14:-}
-    local thinking_enabled=${15:-}
+    local five_hour_reset=$5
+    local seven_day_reset=$6
+    local cost=$7
+    local duration_ms=$8
+    local effort_level=${9:-}
+    local thinking_enabled=${10:-}
 
     local used_color
     local used_bar
@@ -574,25 +513,10 @@ format_output() {
     five_hour_part=$(format_usage_part "5h" "$five_hour" "$five_hour_reset" "18000")
     seven_day_part=$(format_usage_part "Week" "$seven_day" "$seven_day_reset" "604800")
 
-    local sonnet_part=""
-    if [[ "$SHOW_SONNET" != "0" ]]; then
-        sonnet_part=" ${COLOR_GRAY}│${COLOR_RESET} $(format_usage_part "Sonnet" "$sonnet" "$sonnet_reset" "604800")"
-    fi
-
-    local fable_part=""
-    if [[ "$SHOW_FABLE" != "0" ]]; then
-        fable_part=" ${COLOR_GRAY}│${COLOR_RESET} $(format_usage_part "Fable" "$fable" "$fable_reset" "604800")"
-    fi
-
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
     local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
 
-    local status_part=""
-    if [[ -n "$error_msg" ]]; then
-        status_part=" ${COLOR_GRAY}│${COLOR_RESET} ${COLOR_YELLOW}⚠ ${error_msg}${COLOR_RESET}"
-    fi
-
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part}${sonnet_part}${fable_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}${status_part}"
+    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}"
 }
 
 run_test() {
@@ -601,33 +525,29 @@ run_test() {
     # Generate test reset times relative to now
     local now_epoch
     now_epoch=$(date +%s)
-    local reset_2h reset_6d reset_5d
-    reset_2h=$(date -r $((now_epoch + 7200)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
-    reset_6d=$(date -r $((now_epoch + 518400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
-    reset_5d=$(date -r $((now_epoch + 432000)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
+    local reset_2h reset_6d
+    reset_2h=$(TZ=UTC date -r $((now_epoch + 7200)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
+    reset_6d=$(TZ=UTC date -r $((now_epoch + 518400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
 
     echo "Low usage (45%), short session:"
-    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d" "xhigh" "1"
+    format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300000" "xhigh" "1"
     echo ""
     echo "Medium usage (70%), longer session:"
-    format_output "70" "Sonnet" "50" "60" "20" "$reset_2h" "$reset_6d" "$reset_5d" "2.15" "1800000" "" "40" "$reset_5d" "high" "1"
+    format_output "70" "Sonnet" "50" "60" "$reset_2h" "$reset_6d" "2.15" "1800000" "high" "1"
     echo ""
     echo "High usage (85%), expensive session:"
-    format_output "85" "Opus" "80" "90" "65" "$reset_2h" "$reset_6d" "$reset_5d" "8.73" "7200000" "" "88" "$reset_5d" "max" "1"
+    format_output "85" "Opus" "80" "90" "$reset_2h" "$reset_6d" "8.73" "7200000" "max" "1"
     echo ""
     echo "Effort levels:"
     for level in low medium high xhigh max; do
-        format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d" "$level" "1"
+        format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300000" "$level" "1"
     done
     echo ""
     echo "Thinking disabled:"
-    format_output "45" "Opus" "6" "35" "3" "$reset_2h" "$reset_6d" "$reset_5d" "0.42" "300000" "" "7" "$reset_5d" "medium" ""
+    format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300000" "medium" ""
     echo ""
     echo "No limits data:"
-    format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000"
-    echo ""
-    echo "Error state:"
-    format_output "45" "Opus" "" "" "" "" "" "" "0.01" "60000" "open claude.ai"
+    format_output "45" "Opus" "" "" "" "" "0.01" "60000"
 }
 
 project_is_trusted() {
@@ -665,12 +585,8 @@ main() {
     local usage_data
     local five_hour
     local seven_day
-    local sonnet
     local five_hour_reset
     local seven_day_reset
-    local sonnet_reset
-    local fable
-    local fable_reset
     local effort_level
     local thinking_enabled
 
@@ -683,17 +599,9 @@ main() {
     duration_ms=$(parse_duration "$input")
 
     usage_data=$(get_usage_limits "$input")
-    local error_msg=""
-    if [[ "${usage_data%%|*}" == error:* ]]; then
-        error_msg="${usage_data%%|*}"
-        error_msg="${error_msg#error:}"
-        usage_data="|||||||"
-    fi
-    local model_rows_error
-    IFS='|' read -r five_hour seven_day sonnet five_hour_reset seven_day_reset sonnet_reset fable fable_reset model_rows_error <<< "$usage_data"
-    error_msg="${error_msg:-$model_rows_error}"
+    IFS='|' read -r five_hour seven_day five_hour_reset seven_day_reset <<< "$usage_data"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$sonnet" "$five_hour_reset" "$seven_day_reset" "$sonnet_reset" "$cost" "$duration_ms" "$error_msg" "$fable" "$fable_reset" "$effort_level" "$thinking_enabled"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$five_hour_reset" "$seven_day_reset" "$cost" "$duration_ms" "$effort_level" "$thinking_enabled"
     print_project_segment "$input"
 }
 
