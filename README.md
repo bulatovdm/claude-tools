@@ -97,7 +97,7 @@ cs --list             # non-interactive list (no picker)
 cs -p /path/to/repo   # sessions for a specific project
 ```
 
-Reads `~/.claude/history.jsonl`, groups prompts by session, shows date/duration/message count/preview. Select a session by number → resumes it with the session's own effort level (`claude --effort <level> --resume <session-id>`).
+Reads `~/.claude/history.jsonl`, groups prompts by session, shows date/duration/message count/title/preview. The title is the session's latest `/rename` (each rename appends a `custom-title` record to the transcript, the last one wins). Transcripts are append-only and can reach hundreds of MB, so the scanned byte offset and title are cached in `~/.claude/statusline-cache/title-${session_id}` and later runs read only the new tail — the first run over a large project takes a few seconds, subsequent ones are under a second. Select a session by number → resumes it with the session's own effort level (`claude --effort <level> --resume <session-id>`).
 
 Before launching, reads the session's own effort level from its transcript and passes it via `claude --effort` (session-scoped, the global settings stay untouched); thinking state is restored into `~/.claude/settings.json` as best-effort. See [Effort leaks between sessions](#status-line) above. For new sessions, the `cn` alias (`claude --effort medium`) gives every fresh start a known level.
 

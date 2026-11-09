@@ -3,10 +3,12 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="1.2.0"
+readonly VERSION="1.3.0"
 readonly HISTORY_FILE="$HOME/.claude/history.jsonl"
 readonly PROJECTS_DIR="$HOME/.claude/projects"
 readonly SESSION_CACHE_DIR="$HOME/.claude/statusline-cache"
+# Covers a record that was still being written when the previous scan stopped
+readonly TITLE_RESCAN_OVERLAP_BYTES=65536
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -137,7 +139,7 @@ build_session_list() {
             ($proj == "") or
             (.project // "" | contains($proj))
         )
-        | [.sessionId, (.timestamp | tostring), (.project // ""), (.display // "" | gsub("\n"; " ") | gsub("\t"; " ") | if length > 300 then .[:300] else . end)]
+        | [.sessionId, (.timestamp | tostring), (.project // ""), (.display // "" | .[:300] | gsub("[\t\n]"; " "))]
         | @tsv
     ' "$HISTORY_FILE" | awk -F'\t' '
     {
@@ -230,20 +232,68 @@ extract_project_name() {
     basename "$full_path" 2>/dev/null || echo "$full_path"
 }
 
+# /rename appends a new custom-title record, so the last one in the file wins.
+# Transcripts are append-only and can reach hundreds of MB, so remember how far
+# each one was scanned and read only the new tail next time.
+unscanned_tail() {
+    local transcript=$1
+    local from_byte=$2
+
+    # grep reading the file directly is several times faster than through a pipe
+    if [[ $from_byte -le 0 ]]; then
+        LC_ALL=C grep -F '"type":"custom-title"' "$transcript" || true
+        return 0
+    fi
+    tail -c +$((from_byte + 1)) "$transcript"
+}
+
+latest_custom_title() {
+    local transcript=$1
+    local cache_file=$2
+
+    local scanned_bytes=0 title=""
+    if [[ -f "$cache_file" ]]; then
+        IFS=$'\t' read -r scanned_bytes title < "$cache_file" || true
+        [[ "$scanned_bytes" =~ ^[0-9]+$ ]] || scanned_bytes=0
+    fi
+
+    local size
+    size=$(wc -c < "$transcript" | tr -d ' ')
+    if [[ "$size" -lt "$scanned_bytes" ]]; then
+        scanned_bytes=0
+        title=""
+    fi
+
+    if [[ "$size" -gt "$scanned_bytes" ]]; then
+        local rescan_from=$((scanned_bytes - TITLE_RESCAN_OVERLAP_BYTES))
+        local tail_title
+        tail_title=$(unscanned_tail "$transcript" "$rescan_from" \
+            | grep -F '"type":"custom-title"' \
+            | jq -r 'select(.type == "custom-title") | .customTitle // empty | gsub("[\t\n\r]"; " ")' 2>/dev/null \
+            | tail -1) || true
+        [[ -n "$tail_title" ]] && title=$tail_title
+        printf '%s\t%s\n' "$size" "$title" > "$cache_file" 2>/dev/null || true
+    fi
+
+    printf '%s' "$title"
+}
+
 load_session_titles() {
     local session_ids_str="$1"
 
+    mkdir -p "$SESSION_CACHE_DIR" 2>/dev/null || true
+
+    local sid transcript title
     local IFS=','
     for sid in $session_ids_str; do
-        local session_file
-        session_file=$(find "$PROJECTS_DIR" -name "${sid}.jsonl" -print -quit 2>/dev/null)
-        if [[ -n "$session_file" ]]; then
-            local title
-            title=$(grep -o '"customTitle":"[^"]*"' "$session_file" 2>/dev/null | head -1 | sed 's/"customTitle":"//;s/"$//')
+        for transcript in "$PROJECTS_DIR"/*/"${sid}.jsonl"; do
+            [[ -f "$transcript" ]] || continue
+            title=$(latest_custom_title "$transcript" "$SESSION_CACHE_DIR/title-${sid}")
             if [[ -n "$title" ]]; then
                 printf '%s\t%s\n' "$sid" "$title"
             fi
-        fi
+            break
+        done
     done
 }
 
@@ -370,7 +420,7 @@ display_sessions() {
 
     local total=${#SESSION_IDS[@]}
     local term_width
-    term_width=${COLUMNS:-$(stty size 2>/dev/null | awk '{print $2}')}
+    term_width=${COLUMNS:-$(stty size 2>/dev/null | awk '{print $2}' || true)}
     term_width=${term_width:-$(tput cols 2>/dev/null || echo 120)}
     local padding="      "
     local wrap_width=$((term_width - ${#padding}))
@@ -437,7 +487,7 @@ pick_with_fzf() {
 pick_with_select() {
     local total="$1"
     local term_width
-    term_width=${COLUMNS:-$(stty size 2>/dev/null | awk '{print $2}')}
+    term_width=${COLUMNS:-$(stty size 2>/dev/null | awk '{print $2}' || true)}
     term_width=${term_width:-$(tput cols 2>/dev/null || echo 120)}
     local padding="        "
     local wrap_width=$((term_width - ${#padding}))
