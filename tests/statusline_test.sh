@@ -91,7 +91,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "7.0.0"
+assert_contains "shows version" "$result" "7.1.0"
 
 echo ""
 echo "[Help]"
@@ -279,28 +279,82 @@ result=$(run_func "parse_cost '{\"cost\":{}}'")
 assert_equals "defaults to 0 when missing" "$result" "0"
 
 echo ""
-echo "[parse_duration]"
+echo "[format_seconds]"
 
-result=$(run_func "parse_duration '{\"cost\":{\"total_duration_ms\":120000}}'")
-assert_equals "parses duration" "$result" "120000"
-
-result=$(run_func "parse_duration '{\"cost\":{}}'")
-assert_equals "defaults to 0 when missing" "$result" "0"
-
-echo ""
-echo "[format_duration]"
-
-result=$(run_func "format_duration 300000")
+result=$(run_func "format_seconds 300")
 assert_equals "5 minutes" "$result" "5m"
 
-result=$(run_func "format_duration 3600000")
+result=$(run_func "format_seconds 3600")
 assert_equals "1 hour" "$result" "1h 0m"
 
-result=$(run_func "format_duration 5400000")
+result=$(run_func "format_seconds 5400")
 assert_equals "1.5 hours" "$result" "1h 30m"
 
-result=$(run_func "format_duration 0")
+result=$(run_func "format_seconds 0")
 assert_equals "0 minutes" "$result" "0m"
+
+result=$(run_func "format_seconds 93780")
+assert_equals "days and hours" "$result" "1d 2h"
+
+result=$(run_func "format_seconds 1900800")
+assert_equals "weeks and days" "$result" "3w 1d"
+
+echo ""
+echo "[work time from transcript]"
+
+WORK_DIR=$(mktemp -d)
+WORK_SID="11111111-2222-3333-4444-555555555555"
+WORK_TRANSCRIPT="$WORK_DIR/$WORK_SID.jsonl"
+work_iso() { TZ=UTC date -r "$1" +"%Y-%m-%dT%H:%M:%S.000Z"; }
+T0=$((NOW_EPOCH - 86400))
+{
+    # turn 1: 10 min, closed by turn_duration
+    echo "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":\"first\"},\"timestamp\":\"$(work_iso $T0)\"}"
+    echo "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"x\"}]},\"timestamp\":\"$(work_iso $((T0 + 60)))\"}"
+    echo "{\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":600000,\"isSidechain\":false,\"timestamp\":\"$(work_iso $((T0 + 600)))\"}"
+    # idle hour, then /rename during idle must not open a turn
+    echo "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\"},\"timestamp\":\"$(work_iso $((T0 + 1800)))\"}"
+    # turn 2: interrupted by Esc after 5 min, no turn_duration
+    echo "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":\"second\"},\"timestamp\":\"$(work_iso $((T0 + 3600)))\"}"
+    echo "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user]\"}]},\"timestamp\":\"$(work_iso $((T0 + 3900)))\"}"
+    # meta stop-hook feedback must not open a turn
+    echo "{\"type\":\"user\",\"isMeta\":true,\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":\"Stop hook feedback\"},\"timestamp\":\"$(work_iso $((T0 + 4000)))\"}"
+} > "$WORK_TRANSCRIPT"
+mkdir -p "$WORK_DIR/$WORK_SID/subagents"
+# subagent overlaps turn 1 for 5 min and runs 5 min past it
+{
+    echo "{\"type\":\"user\",\"timestamp\":\"$(work_iso $((T0 + 300)))\"}"
+    echo "{\"type\":\"assistant\",\"timestamp\":\"$(work_iso $((T0 + 900)))\"}"
+} > "$WORK_DIR/$WORK_SID/subagents/agent-a1.jsonl"
+
+work_input="{\"session_id\":\"$WORK_SID\",\"transcript_path\":\"$WORK_TRANSCRIPT\"}"
+result=$(run_func "get_work_time '$work_input'")
+assert_equals "turns + interrupt + subagent union, idle excluded" "$result" "1200|"
+
+# turn 3 is running: started 7 minutes ago
+echo "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":\"third\"},\"timestamp\":\"$(work_iso $((NOW_EPOCH - 420)))\"}" >> "$WORK_TRANSCRIPT"
+result=$(run_func "get_work_time '$work_input'")
+total=${result%|*}
+current=${result#*|}
+assert_equals "running turn reported as current" "$((current / 60))" "7"
+assert_equals "running turn added to total incrementally" "$((total / 60))" "27"
+
+# Claude Code rewrote the transcript shorter: full rescan
+echo "{\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":120000,\"isSidechain\":false,\"timestamp\":\"$(work_iso $T0)\"}" > "$WORK_TRANSCRIPT"
+rm -rf "$WORK_DIR/$WORK_SID/subagents"
+result=$(run_func "get_work_time '$work_input'")
+assert_equals "shrunk transcript rescanned" "$result" "120|"
+
+result=$(run_func "format_work_part '93780|420'" | strip_colors)
+assert_equals "work part with running turn" "$result" "Work: 1d 2h · now: 7m"
+
+result=$(run_func "format_work_part '300|'" | strip_colors)
+assert_equals "work part between turns" "$result" "Work: 5m"
+
+result=$(run_func "format_work_part ''" | strip_colors)
+assert_equals "work part without transcript" "$result" "Work: ?"
+
+rm -rf "$WORK_DIR"
 
 echo ""
 echo "[format_cost]"
@@ -418,7 +472,7 @@ assert_equals "negative clamped to empty" "$bar" "░░░░░░░░░░
 echo ""
 echo "[format_output]"
 
-output=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000" | strip_colors)
+output=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 '600|'" | strip_colors)
 assert_contains "contains model name" "$output" "Opus"
 assert_contains "contains context percentage" "$output" "45%"
 assert_contains "contains 5h limit" "$output" "5h: 10%"
@@ -426,22 +480,22 @@ assert_contains "contains week limit" "$output" "Week: 30%"
 assert_contains "contains timer icon" "$output" "◑"
 assert_contains "contains reset time" "$output" "h"
 assert_contains "contains cost" "$output" '$1.25'
-assert_contains "contains time" "$output" "Time: 10m"
+assert_contains "contains work time" "$output" "Work: 10m"
 assert_contains "contains separators" "$output" "│"
 assert_not_contains "no model-scoped rows" "$output" "Sonnet:"
 assert_not_contains "no fable row" "$output" "Fable:"
 assert_not_contains "no warning" "$output" "⚠"
 
-output_effort=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000 xhigh 1" | strip_colors)
+output_effort=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 '600|' xhigh 1" | strip_colors)
 assert_contains "effort follows model name" "$output_effort" "Opus ✻xhigh │"
 
-output_no_thinking=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000 medium ''" | strip_colors)
+output_no_thinking=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 '600|' medium ''" | strip_colors)
 assert_contains "effort without thinking icon" "$output_no_thinking" "Opus medium │"
 
-output_no_effort=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 600000" | strip_colors)
+output_no_effort=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 '600|'" | strip_colors)
 assert_contains "no effort keeps model followed by separator" "$output_no_effort" "Opus │"
 
-output_no_limits=$(run_func "format_output 45 Opus '' '' '' '' 1.25 600000" | strip_colors)
+output_no_limits=$(run_func "format_output 45 Opus '' '' '' '' 1.25 '600|'" | strip_colors)
 assert_contains "missing limits show question marks" "$output_no_limits" "5h: ?"
 
 echo ""
@@ -526,7 +580,7 @@ assert_contains "has 5h" "$full_output" "5h: 12%"
 assert_contains "has timer icon" "$full_output" "◑"
 assert_contains "has week" "$full_output" "Week: 45%"
 assert_contains "has cost" "$full_output" '$2.50'
-assert_contains "has time" "$full_output" "15m"
+assert_contains "unknown work time without transcript" "$full_output" "Work: ?"
 
 echo ""
 echo "[Integration — no rate_limits on stdin]"
@@ -574,10 +628,10 @@ rm -rf "$SEGMENT_ROOT"
 echo ""
 echo "[Color coding]"
 
-low_output=$(run_func "format_output 30 Opus 10 20 '$RESET_2H' '$RESET_6D' 0.5 60000")
+low_output=$(run_func "format_output 30 Opus 10 20 '$RESET_2H' '$RESET_6D' 0.5 '60|'")
 assert_contains "low context uses green" "$low_output" "32m"
 
-high_output=$(run_func "format_output 90 Opus 85 95 '$RESET_2H' '$RESET_6D' 5.0 3600000")
+high_output=$(run_func "format_output 90 Opus 85 95 '$RESET_2H' '$RESET_6D' 5.0 '3600|'")
 assert_contains "high context uses red" "$high_output" "31m"
 
 assert_contains "model uses cyan" "$low_output" "36m"
@@ -598,7 +652,7 @@ assert_contains "test shows high usage" "$test_output" "85%"
 assert_contains "test shows no limits" "$test_output" "?"
 assert_contains "test shows model" "$test_output" "Opus"
 assert_contains "test shows cost" "$test_output" '$0.42'
-assert_contains "test shows time" "$test_output" "Time:"
+assert_contains "test shows work time" "$test_output" "Work:"
 assert_contains "test shows effort levels" "$test_output" "Opus ✻low"
 assert_contains "test shows max effort" "$test_output" "Opus ✻max"
 assert_contains "test shows thinking disabled" "$test_output" "Opus medium"

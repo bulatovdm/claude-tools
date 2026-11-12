@@ -6,10 +6,10 @@ Custom tools and scripts for [Claude Code](https://claude.ai/claude-code) CLI.
 
 ### Status Line
 
-Visual status bar showing model, thinking effort, context usage, subscription limits, cost, and session time:
+Visual status bar showing model, thinking effort, context usage, subscription limits, cost, and real work time:
 
 ```
-Opus 4.6 ✻xhigh │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% 1h34m ◑ │ Week: 35% 6d12h ● │ Cost: $1.25 │ Time: 17m
+Opus 4.6 ✻xhigh │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% 1h34m ◑ │ Week: 35% 6d12h ● │ Cost: $1.25 │ Work: 1d 4h · now: 7m
 ```
 
 - **Model** — current model name (cyan)
@@ -18,7 +18,11 @@ Opus 4.6 ✻xhigh │ Context: ████░░░░░░░░░░░ 30%
 - **5h** — 5-hour usage window utilization with countdown to reset
 - **Week** — 7-day usage window utilization with countdown to reset
 - **Cost** — session cost in USD
-- **Time** — session duration
+- **Work** — how long the agent actually worked in this session, not wall-clock time since launch; `now` is the running turn (shown only while a turn is in progress). Units: `m`, `h`, `d` (days), `w` (weeks), two largest shown
+
+Work time comes from the transcript: each finished turn has a `turn_duration` record (from the prompt to the end of the answer, including tools and permission waits). Turns interrupted with Esc get none and end at the `[Request interrupted by user]` marker. Subagent transcripts (`<session>/subagents/agent-*.jsonl`) add their first-to-last span. All intervals are united, so parallel and nested agents do not multiply the time, and idle time between turns is excluded. A turn killed without either record is not counted. The previous `Time` was `cost.total_duration_ms` — wall-clock since the session started, idle included.
+
+Transcripts can reach a gigabyte, so the folded state is cached in `~/.claude/statusline-cache/work-${session_id}.json` with the scanned size; later renders read only the new tail (with a 1 MB overlap for a line still being written). A tail over 20 MB — the first render of a big resumed session — is scanned in the background (~20 s for 1 GB) while the line shows `Work: ?`.
 
 Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) → ◑ (>37%) → ◔ (>12%) → ○ (reset imminent).
 
@@ -50,7 +54,7 @@ The statusline simply trusts stdin, which reports what Claude Code will actually
 A project can add its own lines under the status line. Put an executable `.claude/statusline-segment.sh` in the project root: on every render it receives the same stdin JSON as the status line, and whatever it prints appears below it (ANSI colors welcome).
 
 ```
-Opus ✻high │ Context: ██░░░░░░░░░░░░░ 12% │ 5h: 4% 4h19m ◕ │ Week: 1% 6d17h ● │ Cost: $0.00 │ Time: 0m
+Opus ✻high │ Context: ██░░░░░░░░░░░░░ 12% │ 5h: 4% 4h19m ◕ │ Week: 1% 6d17h ● │ Cost: $0.00 │ Work: 0m
 ● prod  example.com · bus listener alive
 ```
 

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="7.0.0"
+readonly VERSION="7.1.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -34,9 +34,14 @@ show_help() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS]
 
-Claude Code status line with context bar, model, usage limits, cost, and session time.
+Claude Code status line with context bar, model, usage limits, cost, and work time.
 Shows context usage, current model with thinking effort level, 5-hour and weekly limits,
-session cost and duration.
+session cost and how long the agent actually worked (duration of its turns).
+
+Work time: sum of turn durations from the transcript's turn_duration records
+(Esc-interrupted turns end at the interrupt marker) united with subagent
+transcripts, so parallel agents do not multiply it; idle time between turns is
+excluded. "now" is the running turn. Units: m, h, d (days), w (weeks).
 
 Effort level comes from stdin (.effort.level): low, medium, high, xhigh, max.
 Prefixed with $THINKING_ICON while thinking is enabled (.thinking.enabled).
@@ -375,22 +380,233 @@ parse_cost() {
     echo "$input" | jq -r '.cost.total_cost_usd // 0'
 }
 
-parse_duration() {
-    local input=$1
-    echo "$input" | jq -r '.cost.total_duration_ms // 0' | cut -d'.' -f1
-}
-
-format_duration() {
-    local ms=$1
-    local total_sec=$((ms / 1000))
-    local hours=$((total_sec / 3600))
+# Two largest units: 12m, 3h 5m, 2d 4h, 3w 1d
+format_seconds() {
+    local total_sec=$1
+    local weeks=$((total_sec / 604800))
+    local days=$(((total_sec % 604800) / 86400))
+    local hours=$(((total_sec % 86400) / 3600))
     local mins=$(((total_sec % 3600) / 60))
 
-    if (( hours > 0 )); then
+    if (( weeks > 0 )); then
+        echo "${weeks}w ${days}d"
+    elif (( days > 0 )); then
+        echo "${days}d ${hours}h"
+    elif (( hours > 0 )); then
         echo "${hours}h ${mins}m"
     else
         echo "${mins}m"
     fi
+}
+
+# Folds new transcript lines into {intervals, open}: closed turns come from
+# turn_duration records (Esc-interrupted turns get none, so they close at the
+# interrupt marker); "open" is the start of the turn still running.
+readonly WORK_TURNS_JQ='
+def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdate;
+def text_of: .message.content
+    | if type == "string" then .
+      elif type == "array" then map(select(.type == "text") | .text) | join("")
+      else "" end;
+def is_interrupt: text_of | startswith("[Request interrupted by user");
+def is_turn_start: .isMeta != true and .isCompactSummary != true
+    and (text_of | . != "" and (test("^\\s*<(command-|local-command)") | not));
+reduce (inputs | fromjson? | select(.isSidechain != true and .timestamp != null)) as $e ($state[0];
+    ($e.timestamp | epoch) as $t
+    | if $e.subtype == "turn_duration" then
+        .intervals += [[$t - ($e.durationMs / 1000), $t]] | .open = null
+      elif $e.type != "user" then .
+      elif ($e | is_interrupt) then
+        (if .open then .intervals += [[.open, $t]] else . end) | .open = null
+      elif ($e | is_turn_start) then .open = $t
+      else . end)
+| .intervals |= unique
+| .size = $size'
+
+# Union of all intervals, so parallel agents do not multiply the time
+readonly WORK_SUMMARY_JQ='
+def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdate;
+($state[0] // {intervals: [], open: null}) as $main
+| [$subagents | split("\n")[] | select(length > 0) | split("\t")
+    | select(length == 3) | [(.[1] | epoch), (.[2] | epoch)]] as $sub
+| ($main.intervals + $sub
+    + (if $main.open then [[$main.open, $now]] else [] end))
+| map(select(.[1] > .[0])) | sort_by(.[0])
+| reduce .[] as $i ({total: 0, end: null};
+    if .end == null or $i[0] >= .end then .total += ($i[1] - $i[0]) | .end = $i[1]
+    elif $i[1] > .end then .total += ($i[1] - .end) | .end = $i[1]
+    else . end)
+| "\(.total | floor)|\(if $main.open then ($now - $main.open | floor) else "" end)"'
+
+readonly WORK_BACKGROUND_SCAN_BYTES=20000000
+readonly WORK_RESCAN_OVERLAP_BYTES=1048576
+readonly ISO_TIMESTAMP_PATTERN='"timestamp":"[^"]*"'
+
+file_size() {
+    stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0
+}
+
+extract_relevant_turn_lines() {
+    grep -E '"subtype":"turn_duration"|"type":"user"' | grep -vF '"type":"tool_result"' || true
+}
+
+# Re-reads an overlap before the last scanned size: a line that was still
+# being written then is read whole now. Replayed events are harmless, the
+# fold is order-preserving and intervals are deduplicated.
+update_main_turns_cache() {
+    local transcript=$1
+    local cache_file=$2
+    local current_size=$3
+    local scanned_size=0
+
+    if [[ -f "$cache_file" ]]; then
+        scanned_size=$(jq -r '.size // 0' "$cache_file" 2>/dev/null || echo 0)
+    fi
+    (( current_size == scanned_size )) && return 0
+
+    local state_file
+    state_file=$(mktemp "${cache_file}.XXXXXX")
+    if (( current_size < scanned_size )) || [[ ! -f "$cache_file" ]]; then
+        scanned_size=0
+        echo '{"intervals":[],"open":null,"size":0}' > "$state_file"
+    else
+        cp "$cache_file" "$state_file"
+    fi
+
+    local resume_offset=$((scanned_size - WORK_RESCAN_OVERLAP_BYTES))
+    (( resume_offset < 0 )) && resume_offset=0
+
+    if read_transcript_from "$transcript" "$resume_offset" \
+        | extract_relevant_turn_lines \
+        | jq -nR --slurpfile state "$state_file" --argjson size "$current_size" "$WORK_TURNS_JQ" \
+            > "${state_file}.new" 2>/dev/null; then
+        mv "${state_file}.new" "$cache_file"
+    else
+        rm -f "${state_file}.new"
+    fi
+    rm -f "$state_file"
+}
+
+read_transcript_from() {
+    local transcript=$1
+    local offset=$2
+
+    if (( offset == 0 )); then
+        cat "$transcript"
+    else
+        tail -c +$((offset + 1)) "$transcript"
+    fi
+}
+
+first_and_last_timestamp() {
+    local file=$1
+    local first last
+    first=$(grep -m1 -o "$ISO_TIMESTAMP_PATTERN" "$file" 2>/dev/null | head -1 | cut -d'"' -f4) || true
+    last=$(tail -c 65536 "$file" | grep -o "$ISO_TIMESTAMP_PATTERN" 2>/dev/null | tail -1 | cut -d'"' -f4) || true
+    [[ -n "$first" && -n "$last" ]] && printf '%s\t%s\n' "$first" "$last"
+    return 0
+}
+
+keep_rows_of_existing_files() {
+    local dir=$1
+    local row
+    while IFS= read -r row; do
+        [[ -f "$dir/${row%%$'\t'*}" ]] && printf '%s\n' "$row"
+    done
+    return 0
+}
+
+update_subagent_cache() {
+    local subagent_dir=$1
+    local cache_file=$2
+
+    if [[ ! -d "$subagent_dir" ]]; then
+        rm -f "$cache_file"
+        return 0
+    fi
+
+    local changed
+    if [[ -f "$cache_file" ]]; then
+        changed=$(find "$subagent_dir" -maxdepth 1 -name 'agent-*.jsonl' -newer "$cache_file" 2>/dev/null)
+    else
+        changed=$(find "$subagent_dir" -maxdepth 1 -name 'agent-*.jsonl' 2>/dev/null)
+    fi
+    [[ -z "$changed" ]] && return 0
+
+    local updated
+    updated=$(mktemp "${cache_file}.XXXXXX")
+    {
+        [[ -f "$cache_file" ]] && cat "$cache_file"
+        local file span
+        while IFS= read -r file; do
+            span=$(first_and_last_timestamp "$file")
+            [[ -n "$span" ]] && printf '%s\t%s\n' "$(basename "$file")" "$span"
+        done <<< "$changed"
+    } | awk -F'\t' '{ row[$1] = $0; if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1 } }
+        END { for (i = 1; i <= n; i++) print row[order[i]] }' \
+        | keep_rows_of_existing_files "$subagent_dir" > "$updated"
+    mv "$updated" "$cache_file"
+}
+
+refresh_work_caches() {
+    local transcript=$1
+    local session_id=$2
+    local main_cache="$SESSION_CACHE_DIR/work-${session_id}.json"
+    local subagent_cache="$SESSION_CACHE_DIR/work-subagents-${session_id}"
+    local current_size scanned_size=0
+
+    current_size=$(file_size "$transcript")
+    [[ -f "$main_cache" ]] && scanned_size=$(jq -r '.size // 0' "$main_cache" 2>/dev/null || echo 0)
+
+    if (( current_size - scanned_size > WORK_BACKGROUND_SCAN_BYTES )); then
+        local lock_dir="$SESSION_CACHE_DIR/work-${session_id}.lock"
+        if mkdir "$lock_dir" 2>/dev/null; then
+            (
+                update_main_turns_cache "$transcript" "$main_cache" "$current_size"
+                rmdir "$lock_dir"
+            ) < /dev/null > /dev/null 2>&1 &
+        fi
+    else
+        update_main_turns_cache "$transcript" "$main_cache" "$current_size"
+    fi
+    update_subagent_cache "${transcript%.jsonl}/subagents" "$subagent_cache"
+}
+
+# Output: "total_seconds|current_turn_seconds"; current is empty between turns
+get_work_time() {
+    local input=$1
+    local session_id transcript
+
+    session_id=$(echo "$input" | jq -r '.session_id // empty')
+    transcript=$(find_session_transcript "$input" "$session_id")
+    [[ -n "$transcript" ]] || return 0
+    mkdir -p "$SESSION_CACHE_DIR" 2>/dev/null || return 0
+
+    refresh_work_caches "$transcript" "$session_id"
+
+    local main_cache="$SESSION_CACHE_DIR/work-${session_id}.json"
+    [[ -f "$main_cache" ]] || return 0
+    local subagents=""
+    [[ -f "$SESSION_CACHE_DIR/work-subagents-${session_id}" ]] \
+        && subagents=$(cat "$SESSION_CACHE_DIR/work-subagents-${session_id}")
+
+    jq -nr --slurpfile state "$main_cache" --arg subagents "$subagents" \
+        --argjson now "$(date +%s)" "$WORK_SUMMARY_JQ" 2>/dev/null || true
+}
+
+format_work_part() {
+    local work_time=$1
+    local total current
+
+    if [[ -z "$work_time" ]]; then
+        echo -e "${COLOR_GRAY}Work: ?${COLOR_RESET}"
+        return 0
+    fi
+    IFS='|' read -r total current <<< "$work_time"
+
+    local part="${COLOR_GRAY}Work:${COLOR_RESET} $(format_seconds "$total")"
+    [[ -n "$current" ]] && part="${part} ${COLOR_GRAY}· now:${COLOR_RESET} $(format_seconds "$current")"
+    echo -e "$part"
 }
 
 format_cost() {
@@ -492,7 +708,7 @@ format_output() {
     local five_hour_reset=$5
     local seven_day_reset=$6
     local cost=$7
-    local duration_ms=$8
+    local work_time=$8
     local effort_level=${9:-}
     local thinking_enabled=${10:-}
 
@@ -514,9 +730,10 @@ format_output() {
     seven_day_part=$(format_usage_part "Week" "$seven_day" "$seven_day_reset" "604800")
 
     local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
-    local duration_part="${COLOR_GRAY}Time:${COLOR_RESET} $(format_duration "$duration_ms")"
+    local work_part
+    work_part=$(format_work_part "$work_time")
 
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${duration_part}"
+    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${work_part}"
 }
 
 run_test() {
@@ -530,24 +747,24 @@ run_test() {
     reset_6d=$(TZ=UTC date -r $((now_epoch + 518400)) +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || echo "")
 
     echo "Low usage (45%), short session:"
-    format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300000" "xhigh" "1"
+    format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300|" "xhigh" "1"
     echo ""
     echo "Medium usage (70%), longer session:"
-    format_output "70" "Sonnet" "50" "60" "$reset_2h" "$reset_6d" "2.15" "1800000" "high" "1"
+    format_output "70" "Sonnet" "50" "60" "$reset_2h" "$reset_6d" "2.15" "93780|420" "high" "1"
     echo ""
     echo "High usage (85%), expensive session:"
-    format_output "85" "Opus" "80" "90" "$reset_2h" "$reset_6d" "8.73" "7200000" "max" "1"
+    format_output "85" "Opus" "80" "90" "$reset_2h" "$reset_6d" "8.73" "1900800|60" "max" "1"
     echo ""
     echo "Effort levels:"
     for level in low medium high xhigh max; do
-        format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300000" "$level" "1"
+        format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300|" "$level" "1"
     done
     echo ""
     echo "Thinking disabled:"
-    format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300000" "medium" ""
+    format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300|" "medium" ""
     echo ""
     echo "No limits data:"
-    format_output "45" "Opus" "" "" "" "" "0.01" "60000"
+    format_output "45" "Opus" "" "" "" "" "0.01" ""
 }
 
 project_is_trusted() {
@@ -581,7 +798,7 @@ main() {
     local used
     local model
     local cost
-    local duration_ms
+    local work_time
     local usage_data
     local five_hour
     local seven_day
@@ -596,12 +813,12 @@ main() {
     effort_level=$(parse_effort_level "$input")
     thinking_enabled=$(parse_thinking_enabled "$input")
     cost=$(parse_cost "$input")
-    duration_ms=$(parse_duration "$input")
+    work_time=$(get_work_time "$input")
 
     usage_data=$(get_usage_limits "$input")
     IFS='|' read -r five_hour seven_day five_hour_reset seven_day_reset <<< "$usage_data"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$five_hour_reset" "$seven_day_reset" "$cost" "$duration_ms" "$effort_level" "$thinking_enabled"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$five_hour_reset" "$seven_day_reset" "$cost" "$work_time" "$effort_level" "$thinking_enabled"
     print_project_segment "$input"
 }
 
