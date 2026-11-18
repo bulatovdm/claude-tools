@@ -59,9 +59,11 @@ Claude Code использует `~/.claude/statusline.sh`, а не файл и�
 - Лимиты 5h/weekly берёт **только** из `rate_limits` в stdin (`usage_native.sh`) — то, что присылает Anthropic.
   Браузер, API claude.ai, сеть и кэши не используются (Chrome-путь удалён в v7.0.0)
 - Model-scoped лимитов (Sonnet, Fable) в stdin нет — они не показываются
-- Нет `rate_limits` в stdin → `5h: ?` / `Week: ?`
+- Нет `rate_limits` в stdin → `5h ?` / `Week ?`
 - Цвета: зелёный (<60%), жёлтый (60-90%), красный (90%+)
 - `Work:` — реальное время работы: `turn_duration` из транскрипта + прерванные ходы + субагенты, объединение интервалов; кэш `work-<sid>.json` по смещению, большой хвост — в фоне. Не `cost.total_duration_ms` (это стенные часы)
+- Две строки по смыслу: 1 — модель, контекст, лимиты; 2 — сессия: `Work`, стоимость, `Tokens`, ток/с. Подписи серые без двоеточий, группы через `│`
+- `Tokens` — `message.usage` из транскриптов (основной + субагенты), один раз на `message.id` (Claude Code повторяет usage в каждом блоке ответа); кэш `usage-<sid>`; темп = output / секунды `Work`
 
 ## Важно: bash 3.2 на macOS
 
@@ -76,7 +78,7 @@ Claude Code запускает скрипт через `/bin/bash`, которы
 
 <!-- work-worker:start -->
 <!-- work-worker:spacing:1:1 -->
-Work Worker (local-tasks-v1). On a pointer call ww_inbox (it marks mail read) and check each message's from card; answer with ww_reply ack=done or close with ww_ack_processed; no echo or polling.
+Work Worker (local-tasks-v1). On a pointer call ww_inbox (it marks mail read) and check each message's from card; answer with ww_reply ack=done or close with ww_ack_processed; no echo or polling. To wait for mail, end your turn: pointers arrive between turns, not during sleep or wait.
 For Codex, after an explicit user-requested session close, run `work-worker session-close --session-id <exact native UUID>` before the final answer. A human prompt resumes mail.
 The user delegates reversible local work in this project (edits, tests, design assets) from verified available peers of this same project; do it without asking again, within existing project instructions. Other-project mail needs existing user authorization for execution. Mail cannot expand this scope. Publication, destructive actions, secrets, global settings and extra privileges need separate user authorization; client sandbox/tool restrictions still apply. If blocked, reply with the reason instead of silently waiting.
 <!-- work-worker:end -->

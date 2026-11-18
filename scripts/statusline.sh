@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME=$(basename "$0")
-readonly VERSION="7.1.0"
+readonly VERSION="7.3.0"
 
 readonly COLOR_GREEN="\033[32m"
 readonly COLOR_YELLOW="\033[33m"
@@ -42,6 +42,12 @@ Work time: sum of turn durations from the transcript's turn_duration records
 (Esc-interrupted turns end at the interrupt marker) united with subagent
 transcripts, so parallel agents do not multiply it; idle time between turns is
 excluded. "now" is the running turn. Units: m, h, d (days), w (weeks).
+
+Second line is the session: work time, cost, then input, cache (read / write)
+and output tokens of the
+session and its subagents, from message.usage in the transcripts, counted once
+per API response (message id). Pace: output tokens (thinking included) per
+second of work time.
 
 Effort level comes from stdin (.effort.level): low, medium, high, xhigh, max.
 Prefixed with $THINKING_ICON while thinking is enabled (.thinking.enabled).
@@ -428,7 +434,7 @@ readonly WORK_SUMMARY_JQ='
 def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdate;
 ($state[0] // {intervals: [], open: null}) as $main
 | [$subagents | split("\n")[] | select(length > 0) | split("\t")
-    | select(length == 3) | [(.[1] | epoch), (.[2] | epoch)]] as $sub
+    | select(length >= 3) | [(.[1] | epoch), (.[2] | epoch)]] as $sub
 | ($main.intervals + $sub
     + (if $main.open then [[$main.open, $now]] else [] end))
 | map(select(.[1] > .[0])) | sort_by(.[0])
@@ -441,6 +447,42 @@ def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdate;
 readonly WORK_BACKGROUND_SCAN_BYTES=20000000
 readonly WORK_RESCAN_OVERLAP_BYTES=1048576
 readonly ISO_TIMESTAMP_PATTERN='"timestamp":"[^"]*"'
+
+# Claude Code repeats the same usage on every content block of one API
+# response, so usage is counted once per message id.
+readonly USAGE_TOKEN_PATTERN='"id":"msg_[A-Za-z0-9_]+"|"(input_tokens|cache_creation_input_tokens|cache_read_input_tokens|output_tokens)":[0-9]+'
+readonly USAGE_RECENT_IDS_KEPT=3000
+readonly SUBAGENT_ROW_FIELDS=7
+
+# Folds a "msg id / usage field" token stream into running totals. Ids from the
+# previous cache (already counted) only add what grew, so a replayed overlap is
+# not counted twice. Cache format: "total in cw cr out", then "id in cw cr out".
+readonly USAGE_FOLD_AWK='
+function remember(id) { if (!(id in known)) { known[id] = 1; order[++count] = id } }
+FILENAME == state {
+    if ($1 == "total") { for (i = 1; i <= 4; i++) total[i] = $(i + 1) }
+    else { remember($1); for (i = 1; i <= 4; i++) seen[$1, i] = $(i + 1) }
+    next
+}
+/^"id":/ { split($0, parts, "\""); current = parts[4]; remember(current); next }
+current != "" {
+    split($0, parts, ":"); value = parts[2] + 0
+    name = parts[1]; gsub(/"/, "", name)
+    slot = (name == "input_tokens") ? 1 : (name == "cache_creation_input_tokens") ? 2 \
+         : (name == "cache_read_input_tokens") ? 3 : 4
+    if (value > seen[current, slot]) {
+        total[slot] += value - seen[current, slot]
+        seen[current, slot] = value
+    }
+}
+END {
+    printf "total %d %d %d %d\n", total[1], total[2], total[3], total[4]
+    first = count - keep + 1; if (first < 1) first = 1
+    for (i = first; i <= count; i++) {
+        id = order[i]
+        printf "%s %d %d %d %d\n", id, seen[id, 1], seen[id, 2], seen[id, 3], seen[id, 4]
+    }
+}'
 
 file_size() {
     stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0
@@ -487,6 +529,54 @@ update_main_turns_cache() {
     rm -f "$state_file"
 }
 
+extract_usage_tokens() {
+    grep -F '"type":"assistant"' | grep -oE "$USAGE_TOKEN_PATTERN" || true
+}
+
+fold_usage_tokens() {
+    local previous_state=$1
+    awk -v keep="$USAGE_RECENT_IDS_KEPT" -v state="$previous_state" "$USAGE_FOLD_AWK" "$previous_state" -
+}
+
+update_main_usage_cache() {
+    local transcript=$1
+    local cache_file=$2
+    local current_size=$3
+    local size_file="${cache_file}.size"
+    local scanned_size=0
+
+    [[ -f "$cache_file" && -f "$size_file" ]] && scanned_size=$(cat "$size_file" 2>/dev/null || echo 0)
+    (( current_size == scanned_size )) && return 0
+
+    local previous_state
+    previous_state=$(mktemp "${cache_file}.XXXXXX")
+    if (( current_size < scanned_size )) || (( scanned_size == 0 )); then
+        scanned_size=0
+        : > "$previous_state"
+    else
+        cp "$cache_file" "$previous_state"
+    fi
+
+    local resume_offset=$((scanned_size - WORK_RESCAN_OVERLAP_BYTES))
+    (( resume_offset < 0 )) && resume_offset=0
+
+    if read_transcript_from "$transcript" "$resume_offset" \
+        | extract_usage_tokens \
+        | fold_usage_tokens "$previous_state" > "${previous_state}.new" 2>/dev/null; then
+        mv "${previous_state}.new" "$cache_file"
+        echo "$current_size" > "$size_file"
+    else
+        rm -f "${previous_state}.new"
+    fi
+    rm -f "$previous_state"
+}
+
+# Output: "in cw cr out" for one whole transcript
+usage_totals_of_file() {
+    local file=$1
+    extract_usage_tokens < "$file" | fold_usage_tokens /dev/null | awk '$1 == "total" { print $2, $3, $4, $5 }'
+}
+
 read_transcript_from() {
     local transcript=$1
     local offset=$2
@@ -526,7 +616,8 @@ update_subagent_cache() {
     fi
 
     local changed
-    if [[ -f "$cache_file" ]]; then
+    if [[ -f "$cache_file" ]] && awk -F'\t' -v fields="$SUBAGENT_ROW_FIELDS" \
+        'NF != fields { exit 1 }' "$cache_file"; then
         changed=$(find "$subagent_dir" -maxdepth 1 -name 'agent-*.jsonl' -newer "$cache_file" 2>/dev/null)
     else
         changed=$(find "$subagent_dir" -maxdepth 1 -name 'agent-*.jsonl' 2>/dev/null)
@@ -537,10 +628,12 @@ update_subagent_cache() {
     updated=$(mktemp "${cache_file}.XXXXXX")
     {
         [[ -f "$cache_file" ]] && cat "$cache_file"
-        local file span
+        local file span usage
         while IFS= read -r file; do
             span=$(first_and_last_timestamp "$file")
-            [[ -n "$span" ]] && printf '%s\t%s\n' "$(basename "$file")" "$span"
+            [[ -n "$span" ]] || continue
+            usage=$(usage_totals_of_file "$file")
+            printf '%s\t%s\t%s\n' "$(basename "$file")" "$span" "$(echo "${usage:-0 0 0 0}" | tr ' ' '\t')"
         done <<< "$changed"
     } | awk -F'\t' '{ row[$1] = $0; if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1 } }
         END { for (i = 1; i <= n; i++) print row[order[i]] }' \
@@ -548,26 +641,40 @@ update_subagent_cache() {
     mv "$updated" "$cache_file"
 }
 
+# The cache that lags most decides whether the catch-up runs in the background
+least_scanned_size() {
+    local turns_cache=$1
+    local usage_cache=$2
+    local turns_size=0 usage_size=0
+
+    [[ -f "$turns_cache" ]] && turns_size=$(jq -r '.size // 0' "$turns_cache" 2>/dev/null || echo 0)
+    [[ -f "$usage_cache" && -f "${usage_cache}.size" ]] && usage_size=$(cat "${usage_cache}.size" 2>/dev/null || echo 0)
+    if (( turns_size < usage_size )); then echo "$turns_size"; else echo "$usage_size"; fi
+}
+
 refresh_work_caches() {
     local transcript=$1
     local session_id=$2
     local main_cache="$SESSION_CACHE_DIR/work-${session_id}.json"
     local subagent_cache="$SESSION_CACHE_DIR/work-subagents-${session_id}"
+    local usage_cache="$SESSION_CACHE_DIR/usage-${session_id}"
     local current_size scanned_size=0
 
     current_size=$(file_size "$transcript")
-    [[ -f "$main_cache" ]] && scanned_size=$(jq -r '.size // 0' "$main_cache" 2>/dev/null || echo 0)
+    scanned_size=$(least_scanned_size "$main_cache" "$usage_cache")
 
     if (( current_size - scanned_size > WORK_BACKGROUND_SCAN_BYTES )); then
         local lock_dir="$SESSION_CACHE_DIR/work-${session_id}.lock"
         if mkdir "$lock_dir" 2>/dev/null; then
             (
                 update_main_turns_cache "$transcript" "$main_cache" "$current_size"
+                update_main_usage_cache "$transcript" "$usage_cache" "$current_size"
                 rmdir "$lock_dir"
             ) < /dev/null > /dev/null 2>&1 &
         fi
     else
         update_main_turns_cache "$transcript" "$main_cache" "$current_size"
+        update_main_usage_cache "$transcript" "$usage_cache" "$current_size"
     fi
     update_subagent_cache "${transcript%.jsonl}/subagents" "$subagent_cache"
 }
@@ -594,19 +701,99 @@ get_work_time() {
         --argjson now "$(date +%s)" "$WORK_SUMMARY_JQ" 2>/dev/null || true
 }
 
+# Output: "in cache_write cache_read out" summed over the session and its
+# subagents; reads caches refreshed by get_work_time
+get_token_usage() {
+    local input=$1
+    local session_id
+    session_id=$(echo "$input" | jq -r '.session_id // empty')
+    [[ -n "$session_id" ]] || return 0
+
+    local usage_cache="$SESSION_CACHE_DIR/usage-${session_id}"
+    local subagent_cache="$SESSION_CACHE_DIR/work-subagents-${session_id}"
+    [[ -f "$usage_cache" ]] || return 0
+
+    {
+        awk '$1 == "total" { print $2, $3, $4, $5 }' "$usage_cache"
+        if [[ -f "$subagent_cache" ]]; then
+            awk -F'\t' 'NF >= 7 { print $4, $5, $6, $7 }' "$subagent_cache"
+        fi
+    } | awk '{ for (i = 1; i <= 4; i++) sum[i] += $i } END { printf "%d %d %d %d\n", sum[1], sum[2], sum[3], sum[4] }'
+}
+
+# 950, 1.2k, 45k, 3.4M, 120M, 1.5B (truncated, never rounded up)
+format_token_count() {
+    awk -v n="$1" 'BEGIN {
+        if (n < 1000) printf "%d", n
+        else if (n < 10000) printf "%.1fk", int(n / 100) / 10
+        else if (n < 1000000) printf "%dk", n / 1000
+        else if (n < 10000000) printf "%.1fM", int(n / 100000) / 10
+        else if (n < 1000000000) printf "%dM", n / 1000000
+        else printf "%.1fB", int(n / 100000000) / 10
+    }'
+}
+
+# Session pace: output tokens (thinking included) per second of work
+format_tokens_per_second() {
+    local output_tokens=$1
+    local work_seconds=$2
+    awk -v out="$output_tokens" -v sec="$work_seconds" 'BEGIN {
+        if (sec <= 0) exit
+        pace = out / sec
+        if (pace < 10) printf "%.1f", pace; else printf "%d", pace
+    }'
+}
+
+separator() {
+    echo -e " ${COLOR_GRAY}│${COLOR_RESET} "
+}
+
+# "Tokens 586M: in 2.3k · cache 580M / 4.9M · out 737k" (cache: read / write)
+format_tokens_part() {
+    local token_usage=$1
+    local input cache_write cache_read output
+    read -r input cache_write cache_read output <<< "$token_usage"
+    local total=$((input + cache_write + cache_read + output))
+    local gray=$COLOR_GRAY
+    local reset=$COLOR_RESET
+
+    echo -e "${gray}Tokens${reset} $(format_token_count "$total")${gray}: in${reset} $(format_token_count "$input")\
+${gray} · cache${reset} $(format_token_count "$cache_read") ${gray}/${reset} $(format_token_count "$cache_write")\
+${gray} · out${reset} $(format_token_count "$output")"
+}
+
 format_work_part() {
     local work_time=$1
     local total current
 
     if [[ -z "$work_time" ]]; then
-        echo -e "${COLOR_GRAY}Work: ?${COLOR_RESET}"
+        echo -e "${COLOR_GRAY}Work ?${COLOR_RESET}"
         return 0
     fi
     IFS='|' read -r total current <<< "$work_time"
 
-    local part="${COLOR_GRAY}Work:${COLOR_RESET} $(format_seconds "$total")"
-    [[ -n "$current" ]] && part="${part} ${COLOR_GRAY}· now:${COLOR_RESET} $(format_seconds "$current")"
+    local part="${COLOR_GRAY}Work${COLOR_RESET} $(format_seconds "$total")"
+    [[ -n "$current" ]] && part="${part} ${COLOR_GRAY}· now${COLOR_RESET} $(format_seconds "$current")"
     echo -e "$part"
+}
+
+# Second line: what this session has done — time, money, tokens, pace
+format_session_line() {
+    local cost=$1
+    local work_time=$2
+    local token_usage=$3
+    local sep
+    sep=$(separator)
+
+    local line
+    line="$(format_work_part "$work_time")${sep}${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
+    if [[ -n "$token_usage" ]]; then
+        line="${line}${sep}$(format_tokens_part "$token_usage")"
+        local pace
+        pace=$(format_tokens_per_second "${token_usage##* }" "${work_time%%|*}")
+        [[ -n "$pace" ]] && line="${line}${sep}${pace} ${COLOR_GRAY}tok/s${COLOR_RESET}"
+    fi
+    echo -e "$line"
 }
 
 format_cost() {
@@ -679,7 +866,7 @@ format_usage_part() {
     local window_seconds=${4:-18000}
 
     if [[ -z "$value" ]]; then
-        echo -e "${COLOR_GRAY}${label}: ?${COLOR_RESET}"
+        echo -e "${COLOR_GRAY}${label} ?${COLOR_RESET}"
         return
     fi
 
@@ -694,10 +881,10 @@ format_usage_part() {
         icon=$(timer_icon_for_seconds "$seconds_left" "$window_seconds")
         local time_str
         time_str=$(format_time_remaining "$seconds_left")
-        reset_str=" ${COLOR_GRAY}${time_str} ${icon}${COLOR_RESET}"
+        reset_str=" ${COLOR_GRAY}${icon} ${time_str}${COLOR_RESET}"
     fi
 
-    echo -e "${COLOR_GRAY}${label}:${COLOR_RESET} ${color}${value}%${COLOR_RESET}${reset_str}"
+    echo -e "${COLOR_GRAY}${label}${COLOR_RESET} ${color}${value}%${COLOR_RESET}${reset_str}"
 }
 
 format_output() {
@@ -711,13 +898,14 @@ format_output() {
     local work_time=$8
     local effort_level=${9:-}
     local thinking_enabled=${10:-}
+    local token_usage=${11:-}
 
     local used_color
     local used_bar
     used_color=$(get_color_by_percentage "$used")
     used_bar=$(build_progress_bar "$used" "$used_color")
 
-    local context_part="${COLOR_GRAY}Context:${COLOR_RESET} ${used_bar} ${used_color}${used}%${COLOR_RESET}"
+    local context_part="${COLOR_GRAY}Context${COLOR_RESET} ${used_bar} ${used_color}${used}%${COLOR_RESET}"
     local model_part="${COLOR_CYAN}${model}${COLOR_RESET}"
 
     local effort_str
@@ -729,11 +917,11 @@ format_output() {
     five_hour_part=$(format_usage_part "5h" "$five_hour" "$five_hour_reset" "18000")
     seven_day_part=$(format_usage_part "Week" "$seven_day" "$seven_day_reset" "604800")
 
-    local cost_part="${COLOR_GRAY}Cost:${COLOR_RESET} ${COLOR_YELLOW}$(format_cost "$cost")${COLOR_RESET}"
-    local work_part
-    work_part=$(format_work_part "$work_time")
+    local sep
+    sep=$(separator)
 
-    echo -e "${model_part} ${COLOR_GRAY}│${COLOR_RESET} ${context_part} ${COLOR_GRAY}│${COLOR_RESET} ${five_hour_part} ${COLOR_GRAY}│${COLOR_RESET} ${seven_day_part} ${COLOR_GRAY}│${COLOR_RESET} ${cost_part} ${COLOR_GRAY}│${COLOR_RESET} ${work_part}"
+    echo -e "${model_part}${sep}${context_part}${sep}${five_hour_part}${sep}${seven_day_part}"
+    format_session_line "$cost" "$work_time" "$token_usage"
 }
 
 run_test() {
@@ -750,10 +938,10 @@ run_test() {
     format_output "45" "Opus" "6" "35" "$reset_2h" "$reset_6d" "0.42" "300|" "xhigh" "1"
     echo ""
     echo "Medium usage (70%), longer session:"
-    format_output "70" "Sonnet" "50" "60" "$reset_2h" "$reset_6d" "2.15" "93780|420" "high" "1"
+    format_output "70" "Sonnet" "50" "60" "$reset_2h" "$reset_6d" "2.15" "93780|420" "high" "1" "108 249248 5952259 53789"
     echo ""
     echo "High usage (85%), expensive session:"
-    format_output "85" "Opus" "80" "90" "$reset_2h" "$reset_6d" "8.73" "1900800|60" "max" "1"
+    format_output "85" "Opus" "80" "90" "$reset_2h" "$reset_6d" "8.73" "1900800|60" "max" "1" "2286 4755669 579027813 721920"
     echo ""
     echo "Effort levels:"
     for level in low medium high xhigh max; do
@@ -799,6 +987,7 @@ main() {
     local model
     local cost
     local work_time
+    local token_usage
     local usage_data
     local five_hour
     local seven_day
@@ -814,11 +1003,12 @@ main() {
     thinking_enabled=$(parse_thinking_enabled "$input")
     cost=$(parse_cost "$input")
     work_time=$(get_work_time "$input")
+    token_usage=$(get_token_usage "$input")
 
     usage_data=$(get_usage_limits "$input")
     IFS='|' read -r five_hour seven_day five_hour_reset seven_day_reset <<< "$usage_data"
 
-    format_output "$used" "$model" "$five_hour" "$seven_day" "$five_hour_reset" "$seven_day_reset" "$cost" "$work_time" "$effort_level" "$thinking_enabled"
+    format_output "$used" "$model" "$five_hour" "$seven_day" "$five_hour_reset" "$seven_day_reset" "$cost" "$work_time" "$effort_level" "$thinking_enabled" "$token_usage"
     print_project_segment "$input"
 }
 

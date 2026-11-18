@@ -9,20 +9,27 @@ Custom tools and scripts for [Claude Code](https://claude.ai/claude-code) CLI.
 Visual status bar showing model, thinking effort, context usage, subscription limits, cost, and real work time:
 
 ```
-Opus 4.6 ✻xhigh │ Context: ████░░░░░░░░░░░ 30% │ 5h: 6% 1h34m ◑ │ Week: 35% 6d12h ● │ Cost: $1.25 │ Work: 1d 4h · now: 7m
+Opus 4.6 ✻xhigh │ Context ████░░░░░░░░░░░ 30% │ 5h 6% ◑ 1h34m │ Week 35% ● 6d12h
+Work 1d 4h · now 7m │ $1.25 │ Tokens 586M: in 2.3k · cache 580M / 4.9M · out 737k │ 61 tok/s
 ```
+
+Two lines, grouped by meaning: the first is what is available (model, context, subscription limits), the second is what this session has done (work time, cost, tokens, pace). Labels are gray, values bright, groups separated by `│`.
 
 - **Model** — current model name (cyan)
 - **Effort** — thinking effort level (`low`, `medium`, `high`, `xhigh`, `max`), prefixed with ✻ while thinking is enabled
 - **Context** — context window usage with progress bar (green → yellow → red)
 - **5h** — 5-hour usage window utilization with countdown to reset
 - **Week** — 7-day usage window utilization with countdown to reset
-- **Cost** — session cost in USD
+- **Cost** — session cost in USD (yellow, second line)
 - **Work** — how long the agent actually worked in this session, not wall-clock time since launch; `now` is the running turn (shown only while a turn is in progress). Units: `m`, `h`, `d` (days), `w` (weeks), two largest shown
 
 Work time comes from the transcript: each finished turn has a `turn_duration` record (from the prompt to the end of the answer, including tools and permission waits). Turns interrupted with Esc get none and end at the `[Request interrupted by user]` marker. Subagent transcripts (`<session>/subagents/agent-*.jsonl`) add their first-to-last span. All intervals are united, so parallel and nested agents do not multiply the time, and idle time between turns is excluded. A turn killed without either record is not counted. The previous `Time` was `cost.total_duration_ms` — wall-clock since the session started, idle included.
 
-Transcripts can reach a gigabyte, so the folded state is cached in `~/.claude/statusline-cache/work-${session_id}.json` with the scanned size; later renders read only the new tail (with a 1 MB overlap for a line still being written). A tail over 20 MB — the first render of a big resumed session — is scanned in the background (~20 s for 1 GB) while the line shows `Work: ?`.
+- **Tokens** — all tokens of the session and its subagents: `in` (uncached input), `cache` read / write, `out` (thinking included), then the session pace in output tokens per second of work time (one decimal below 10). Pauses between turns are excluded and parallel agents count once, as in `Work`; tool time is inside turns, so this is the session pace, not the model's generation speed
+
+Token counts come from `message.usage` of assistant records. Claude Code repeats the same usage on every content block of one API response, so each response is counted once by `message.id`. Counts are truncated (`1.59k` → `1.5k`), never rounded up. Cost is not recomputed: `Cost` already comes from Claude Code on stdin.
+
+Transcripts can reach a gigabyte, so the folded state is cached in `~/.claude/statusline-cache/work-${session_id}.json` and `usage-${session_id}` (totals plus the last 3000 message ids, so a re-read overlap is not counted twice) with the scanned size; later renders read only the new tail (with a 1 MB overlap for a line still being written). A tail over 20 MB — the first render of a big resumed session — is scanned in the background (~20 s for 1 GB) while the line shows `Work ?`.
 
 Timer icons show remaining time until limit reset: ● (>87%) → ◕ (>62%) → ◑ (>37%) → ◔ (>12%) → ○ (reset imminent).
 
@@ -54,7 +61,8 @@ The statusline simply trusts stdin, which reports what Claude Code will actually
 A project can add its own lines under the status line. Put an executable `.claude/statusline-segment.sh` in the project root: on every render it receives the same stdin JSON as the status line, and whatever it prints appears below it (ANSI colors welcome).
 
 ```
-Opus ✻high │ Context: ██░░░░░░░░░░░░░ 12% │ 5h: 4% 4h19m ◕ │ Week: 1% 6d17h ● │ Cost: $0.00 │ Work: 0m
+Opus ✻high │ Context ██░░░░░░░░░░░░░ 12% │ 5h 4% ◕ 4h19m │ Week 1% ● 6d17h
+Work 0m │ $0.00
 ● prod  example.com · bus listener alive
 ```
 
@@ -82,7 +90,7 @@ statusline stdin JSON (Claude Code v2.1.80+), parsed by `usage_native.sh`.
 
 Nothing else is queried — no browser, no claude.ai API, no network, no cache. When a
 render arrives without `rate_limits` (an older Claude Code, or before the first API
-response of a session), the rows show `5h: ?` / `Week: ?`.
+response of a session), the rows show `5h ?` / `Week ?`.
 
 Model-scoped weekly limits (Sonnet, Fable) are not part of `rate_limits`, so they are
 no longer shown. Until v7.0.0 they were read from the claude.ai API through Chrome

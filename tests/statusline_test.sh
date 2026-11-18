@@ -91,7 +91,7 @@ echo ""
 
 echo "[Version]"
 result=$(bash "$STATUSLINE" --version)
-assert_contains "shows version" "$result" "7.1.0"
+assert_contains "shows version" "$result" "7.3.0"
 
 echo ""
 echo "[Help]"
@@ -346,15 +346,80 @@ result=$(run_func "get_work_time '$work_input'")
 assert_equals "shrunk transcript rescanned" "$result" "120|"
 
 result=$(run_func "format_work_part '93780|420'" | strip_colors)
-assert_equals "work part with running turn" "$result" "Work: 1d 2h · now: 7m"
+assert_equals "work part with running turn" "$result" "Work 1d 2h · now 7m"
 
 result=$(run_func "format_work_part '300|'" | strip_colors)
-assert_equals "work part between turns" "$result" "Work: 5m"
+assert_equals "work part between turns" "$result" "Work 5m"
 
 result=$(run_func "format_work_part ''" | strip_colors)
-assert_equals "work part without transcript" "$result" "Work: ?"
+assert_equals "work part without transcript" "$result" "Work ?"
 
 rm -rf "$WORK_DIR"
+
+echo ""
+echo "[token usage from transcript]"
+
+USAGE_DIR=$(mktemp -d)
+USAGE_SID="22222222-3333-4444-5555-666666666666"
+USAGE_TRANSCRIPT="$USAGE_DIR/$USAGE_SID.jsonl"
+assistant_line() {
+    local id=$1 input=$2 write=$3 read=$4 output=$5
+    printf '{"type":"assistant","isSidechain":false,"message":{"id":"%s","role":"assistant","content":[{"type":"text","text":"\\"input_tokens\\":999"}],"usage":{"input_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d,"output_tokens":%d,"iterations":[{"input_tokens":%d,"output_tokens":%d}]}},"timestamp":"%s"}\n' \
+        "$id" "$input" "$write" "$read" "$output" "$input" "$output" "$(work_iso "$NOW_EPOCH")"
+}
+{
+    echo "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":\"go\"},\"timestamp\":\"$(work_iso $((NOW_EPOCH - 100)))\"}"
+    # one API response split into two content blocks: usage repeated, counted once
+    assistant_line msg_A 10 1000 5000 200
+    assistant_line msg_A 10 1000 5000 200
+    assistant_line msg_B 5 100 6000 300
+    echo "{\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":100000,\"isSidechain\":false,\"timestamp\":\"$(work_iso "$NOW_EPOCH")\"}"
+} > "$USAGE_TRANSCRIPT"
+mkdir -p "$USAGE_DIR/$USAGE_SID/subagents"
+{
+    echo "{\"type\":\"user\",\"timestamp\":\"$(work_iso $((NOW_EPOCH - 50)))\"}"
+    assistant_line msg_S 1 10 100 1000
+} > "$USAGE_DIR/$USAGE_SID/subagents/agent-s1.jsonl"
+
+usage_input="{\"session_id\":\"$USAGE_SID\",\"transcript_path\":\"$USAGE_TRANSCRIPT\"}"
+run_func "get_work_time '$usage_input'" > /dev/null
+result=$(run_func "get_token_usage '$usage_input'")
+assert_equals "deduplicated by message id, subagents added" "$result" "16 1110 11100 1500"
+
+# Replayed overlap: the same messages are read again with the new tail
+assistant_line msg_C 1 1 1 50 >> "$USAGE_TRANSCRIPT"
+run_func "get_work_time '$usage_input'" > /dev/null
+result=$(run_func "get_token_usage '$usage_input'")
+assert_equals "overlap replay does not double count" "$result" "17 1111 11101 1550"
+
+# Subagent cache from v7.1.0 (no usage columns) is rebuilt
+printf 'agent-s1.jsonl\t%s\t%s\n' "$(work_iso $((NOW_EPOCH - 50)))" "$(work_iso "$NOW_EPOCH")" \
+    > "$STATUSLINE_CACHE_DIR/work-subagents-$USAGE_SID"
+touch -t 200001010000 "$USAGE_DIR/$USAGE_SID/subagents/agent-s1.jsonl"
+run_func "get_work_time '$usage_input'" > /dev/null
+result=$(run_func "get_token_usage '$usage_input'")
+assert_equals "old subagent cache rebuilt with usage" "$result" "17 1111 11101 1550"
+
+result=$(run_func "format_session_line 1.25 '100|' '17 1111 11101 1550'" | strip_colors)
+assert_equals "session line" "$result" 'Work 1m │ $1.25 │ Tokens 13k: in 17 · cache 11k / 1.1k · out 1.5k │ 15 tok/s'
+
+result=$(run_func "format_session_line 1.25 '1000|60' '0 0 0 5000'" | strip_colors)
+assert_equals "slow pace keeps a decimal" "$result" 'Work 16m · now 1m │ $1.25 │ Tokens 5.0k: in 0 · cache 0 / 0 · out 5.0k │ 5.0 tok/s'
+
+result=$(run_func "format_session_line 1.25 '' '17 1111 11101 1550'" | strip_colors)
+assert_equals "no pace without work time" "$result" 'Work ? │ $1.25 │ Tokens 13k: in 17 · cache 11k / 1.1k · out 1.5k'
+
+result=$(run_func "format_session_line 0.42 '300|' ''" | strip_colors)
+assert_equals "no tokens part without usage" "$result" 'Work 5m │ $0.42'
+
+rm -rf "$USAGE_DIR"
+
+echo ""
+echo "[format_token_count]"
+for pair in "950:950" "1234:1.2k" "45678:45k" "3456789:3.4M" "123456789:123M" "7712345678:7.7B"; do
+    result=$(run_func "format_token_count ${pair%%:*}")
+    assert_equals "${pair%%:*} tokens" "$result" "${pair#*:}"
+done
 
 echo ""
 echo "[format_cost]"
@@ -475,12 +540,17 @@ echo "[format_output]"
 output=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D' 1.25 '600|'" | strip_colors)
 assert_contains "contains model name" "$output" "Opus"
 assert_contains "contains context percentage" "$output" "45%"
-assert_contains "contains 5h limit" "$output" "5h: 10%"
-assert_contains "contains week limit" "$output" "Week: 30%"
+assert_contains "contains 5h limit" "$output" "5h 10%"
+assert_contains "contains week limit" "$output" "Week 30%"
 assert_contains "contains timer icon" "$output" "◑"
 assert_contains "contains reset time" "$output" "h"
 assert_contains "contains cost" "$output" '$1.25'
-assert_contains "contains work time" "$output" "Work: 10m"
+assert_contains "contains work time" "$output" "Work 10m"
+first_line=$(echo "$output" | sed -n 1p)
+second_line=$(echo "$output" | sed -n 2p)
+assert_not_contains "status line has no session data" "$first_line" '$1.25'
+assert_contains "session line starts with work" "$second_line" "Work 10m │ \$1.25"
+assert_contains "reset icon before time" "$first_line" "10% ◑"
 assert_contains "contains separators" "$output" "│"
 assert_not_contains "no model-scoped rows" "$output" "Sonnet:"
 assert_not_contains "no fable row" "$output" "Fable:"
@@ -496,16 +566,16 @@ output_no_effort=$(run_func "format_output 45 Opus 10 30 '$RESET_2H' '$RESET_6D'
 assert_contains "no effort keeps model followed by separator" "$output_no_effort" "Opus │"
 
 output_no_limits=$(run_func "format_output 45 Opus '' '' '' '' 1.25 '600|'" | strip_colors)
-assert_contains "missing limits show question marks" "$output_no_limits" "5h: ?"
+assert_contains "missing limits show question marks" "$output_no_limits" "5h ?"
 
 echo ""
 echo "[format_usage_part]"
 
 result=$(run_func "format_usage_part '5h' ''" | strip_colors)
-assert_contains "missing data shows ?" "$result" "5h: ?"
+assert_contains "missing data shows ?" "$result" "5h ?"
 
 result=$(run_func "format_usage_part 'Week' '42'" | strip_colors)
-assert_contains "present data shows value" "$result" "Week: 42%"
+assert_contains "present data shows value" "$result" "Week 42%"
 
 result=$(run_func "format_usage_part '5h' '20' '$RESET_2H' 18000" | strip_colors)
 assert_contains "shows timer icon" "$result" "◑"
@@ -515,7 +585,7 @@ result=$(run_func "format_usage_part '5h' '20' '$RESET_4H' 18000" | strip_colors
 assert_contains "4h shows three-quarter icon" "$result" "◕"
 
 result=$(run_func "format_usage_part '5h' '20' '' 18000" | strip_colors)
-assert_contains "no reset without timestamp" "$result" "5h: 20%"
+assert_contains "no reset without timestamp" "$result" "5h 20%"
 
 echo ""
 echo "=== Native module ==="
@@ -576,19 +646,19 @@ full_output=$(echo "{\"context_window\":{\"used_percentage\":55},\"model\":{\"di
 assert_contains "has model" "$full_output" "Sonnet"
 assert_contains "has effort from stdin" "$full_output" "Sonnet ✻high"
 assert_contains "has context" "$full_output" "55%"
-assert_contains "has 5h" "$full_output" "5h: 12%"
+assert_contains "has 5h" "$full_output" "5h 12%"
 assert_contains "has timer icon" "$full_output" "◑"
-assert_contains "has week" "$full_output" "Week: 45%"
+assert_contains "has week" "$full_output" "Week 45%"
 assert_contains "has cost" "$full_output" '$2.50'
-assert_contains "unknown work time without transcript" "$full_output" "Work: ?"
+assert_contains "unknown work time without transcript" "$full_output" "Work ?"
 
 echo ""
 echo "[Integration — no rate_limits on stdin]"
 
 full_output=$(echo '{"context_window":{"used_percentage":55},"model":{"display_name":"Opus"},"cost":{"total_cost_usd":2.50,"total_duration_ms":900000}}' | \
     bash -c "source '$TEST_SCRIPT'; SCRIPT_DIR='$SCRIPT_DIR/scripts'; main" | strip_colors)
-assert_contains "missing limits show question marks" "$full_output" "5h: ?"
-assert_contains "missing weekly shows question mark" "$full_output" "Week: ?"
+assert_contains "missing limits show question marks" "$full_output" "5h ?"
+assert_contains "missing weekly shows question mark" "$full_output" "Week ?"
 assert_not_contains "no warning without a browser source" "$full_output" "⚠"
 
 echo ""
@@ -652,7 +722,7 @@ assert_contains "test shows high usage" "$test_output" "85%"
 assert_contains "test shows no limits" "$test_output" "?"
 assert_contains "test shows model" "$test_output" "Opus"
 assert_contains "test shows cost" "$test_output" '$0.42'
-assert_contains "test shows work time" "$test_output" "Work:"
+assert_contains "test shows work time" "$test_output" "Work "
 assert_contains "test shows effort levels" "$test_output" "Opus ✻low"
 assert_contains "test shows max effort" "$test_output" "Opus ✻max"
 assert_contains "test shows thinking disabled" "$test_output" "Opus medium"
